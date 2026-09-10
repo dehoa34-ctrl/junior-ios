@@ -1,0 +1,115 @@
+# Junior iOS uygulamasini Mac olmadan derler.
+# Cikti imzasiz bir .ipa'dir; imzalama telefonda SideStore/AltStore tarafindan yapilir.
+name: iOS build
+
+on:
+  push:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "ios/**"
+  workflow_dispatch:
+
+# Ayni dal icin eski derlemeyi iptal et; private repoda macOS dakikalari 10x sayilir.
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # DAT iOS SDK Xcode 26.4+ istiyor; macos-15'te varsayilan 16.4.
+    runs-on: macos-26
+    timeout-minutes: 35
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode surumunu yazdir
+        run: xcodebuild -version
+
+      - name: XcodeGen kur
+        run: brew install xcodegen
+
+      - name: Proje dosyasini uret
+        working-directory: ios
+        run: xcodegen generate --spec project.yml
+
+      # Testler once: gecmezse .ipa uretilmesin.
+      - name: Birim testleri (simulator)
+        working-directory: ios
+        run: |
+          set -o pipefail
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          for runtime, devices in sorted(json.load(sys.stdin)['devices'].items()):
+              if 'iOS' not in runtime:
+                  continue
+              for device in devices:
+                  if device.get('isAvailable') and device['name'].startswith('iPhone'):
+                      print(device['name'])
+                      raise SystemExit
+          ")
+          test -n "$DEVICE" || { echo "Kullanilabilir iPhone simulatoru yok"; exit 1; }
+          echo "Simulator: $DEVICE"
+          # Paralel test, bu boyuttaki bir takim icin simulator klonlari acip
+          # dakikalar harciyor; testler kendisi iki saniye suruyor.
+          #
+          # Cikti dosyaya yaziliyor: "-quiet | tail" birlesimi derleme hatasini
+          # yutup geriye yalniz uyarilari birakiyordu, sebep gorunmuyordu.
+          set +e
+          xcodebuild test \
+            -project Junior.xcodeproj \
+            -scheme Junior \
+            -destination "platform=iOS Simulator,name=$DEVICE" \
+            -clonedSourcePackagesDirPath SourcePackages \
+            -parallel-testing-enabled NO \
+            -enableCodeCoverage NO \
+            CODE_SIGNING_ALLOWED=NO \
+            > test.log 2>&1
+          status=$?
+          set -e
+          if [ $status -ne 0 ]; then
+            echo "===== HATALAR ====="
+            grep -E "error:|BUILD FAILED|Testing failed|xcodebuild: error" test.log | head -40 || true
+            echo "===== SON 60 SATIR ====="
+            tail -60 test.log
+            exit $status
+          fi
+          grep -E "Executed [0-9]+ tests" test.log | tail -1 || true
+
+      - name: Derle (imzasiz)
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Junior.xcodeproj \
+            -scheme Junior \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            -clonedSourcePackagesDirPath SourcePackages \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ENABLE_BITCODE=NO \
+            build
+
+      - name: .ipa paketle
+        working-directory: ios
+        run: |
+          APP="build/Build/Products/Release-iphoneos/Junior.app"
+          test -d "$APP" || { echo "Junior.app bulunamadi"; exit 1; }
+          mkdir -p Payload
+          cp -R "$APP" Payload/Junior.app
+          zip -qry Junior.ipa Payload
+          ls -lh Junior.ipa
+
+      - name: Ciktilari yukle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Junior-ipa
+          path: ios/Junior.ipa
+          retention-days: 30
+          if-no-files-found: error

@@ -1,0 +1,109 @@
+name: Junior
+options:
+  bundleIdPrefix: xyz.jrbilge
+  deploymentTarget:
+    iOS: "17.2"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_STRICT_CONCURRENCY: minimal
+
+packages:
+  MetaWearablesDAT:
+    url: https://github.com/facebook/meta-wearables-dat-ios
+    exactVersion: 0.9.0
+
+targets:
+  Junior:
+    type: application
+    platform: iOS
+    dependencies:
+      - package: MetaWearablesDAT
+        product: MWDATCore
+      - package: MetaWearablesDAT
+        product: MWDATCamera
+    sources:
+      - path: Junior/Sources
+      - path: Junior/Resources
+    info:
+      path: Junior/Info.plist
+      properties:
+        CFBundleDisplayName: Junior
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # Izin metinleri kullaniciya aynen gosterilir; Turkce ve acik olmali.
+        NSMicrophoneUsageDescription: Junior'a konusabilmen icin mikrofon gerekiyor.
+        NSSpeechRecognitionUsageDescription: Soylediklerini yaziya cevirmek icin konusma tanima gerekiyor.
+        NSCameraUsageDescription: "\"Bu ne\" gibi sorularda gonderdigin fotografi cekmek icin kamera gerekiyor."
+        NSPhotoLibraryUsageDescription: Var olan bir fotografi Junior'a sormak icin galeri erisimi gerekiyor.
+        # Yerel aglarda kendi sunucuna duz HTTP ile baglanabilmek icin; uzak adres HTTPS'tir.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        # Uyandirma sozcugu arka planda da dinleyebilsin. iOS yine de uygulamayi
+        # uyutabilir; kilitli telefonda surekli calisma garantisi yoktur.
+        UIBackgroundModes:
+          - audio
+          # DAT gozlukle Bluetooth ve harici aksesuar kanallarindan konusuyor.
+          - bluetooth-central
+          - bluetooth-peripheral
+          - external-accessory
+        NSBluetoothAlwaysUsageDescription: Gozlukle baglanti kurmak icin Bluetooth gerekiyor.
+        NSLocalNetworkUsageDescription: Gozluk baglantisi yerel agi kullaniyor.
+        # Kayit sirasinda Meta AI uygulamasini acabilmek icin sema sorgusu gerekli.
+        LSApplicationQueriesSchemes:
+          - fb-viewapp
+        # Gozluk harici aksesuar protokolu uzerinden veri tasiyor.
+        UISupportedExternalAccessoryProtocols:
+          - com.meta.ar.wearable
+        # Meta AI uygulamasi kayit sonrasi buraya geri doner.
+        CFBundleURLTypes:
+          - CFBundleURLSchemes:
+              - junior
+        MWDAT:
+          AppLinkURLScheme: junior://
+          # Developer Mode'da dogrulama (attestation) yapilmiyor ve resmi ornek
+          # bu alani "0" olarak veriyor. Bos string birakmak Meta AI tarafinda
+          # "dahili hata / islem tamamlanamadi" ile sonuclaniyordu.
+          #
+          # ClientToken ve TeamID bilerek yok: resmi ornekte de yoklar ve bos
+          # string olarak yazildiklarinda ayni dogrulama hatasini uretiyorlar.
+          # Yayimlanmis bir uygulama icin Wearables Developer Center'dan alinir.
+          MetaAppID: "0"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: xyz.jrbilge.junior
+        TARGETED_DEVICE_FAMILY: "1"
+
+  JuniorTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: JuniorTests
+    dependencies:
+      - target: Junior
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: xyz.jrbilge.junior.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Junior:
+    build:
+      targets:
+        Junior: all
+        JuniorTests: [test]
+    test:
+      targets:
+        - JuniorTests
+    run:
+      config: Debug
