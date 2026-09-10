@@ -35,12 +35,19 @@ final class GlassesService: ObservableObject {
     private var camera: Camera?
     private var pendingCapture: CheckedContinuation<Data, Error>?
 
-    /// Gozlukten kare beklenecek en uzun sure.
-    private static let captureTimeout: Double = 12
+    /// Gozlukten kare beklenecek en uzun sure. Gozluk kamerayi acip (beyaz
+    /// isik) kareyi gondermesi birkac saniye surebiliyor.
+    private static let captureTimeout: Double = 20
+
+    /// Fotograf dinleyicisinin jetonu. **Saklanmak zorunda**: birakilirsa
+    /// abonelik cop toplanip iptal oluyor ve kare hic ulasmiyor. Belirtisi
+    /// tam da gozlukte beyaz isigin yanip sonmesi ve ardindan zaman asimi.
 
     /// Her cekime bir numara verilir. Zaman asimi gorevi hangi cekime ait
     /// oldugunu bilmezse, erken biten bir cekimin gorevi 12 saniye sonra
     /// uyanip **sonraki** cekimi haksiz yere iptal eder.
+    private var photoToken: Any?
+
     private var captureGeneration = 0
 
     var isReady: Bool { state == .ready }
@@ -218,6 +225,7 @@ final class GlassesService: ObservableObject {
     func disconnect() async {
         await camera?.stream.stop()
         camera = nil
+        photoToken = nil
         await session?.stop()
         session = nil
         if case .failed = state {} else { state = .idle }
@@ -237,7 +245,7 @@ final class GlassesService: ObservableObject {
             throw GlassesError.cameraUnavailable
         }
         self.camera = camera
-        camera.stream.photoDataPublisher.listen { [weak self] photo in
+        photoToken = camera.stream.photoDataPublisher.listen { [weak self] photo in
             Task { @MainActor in await self?.finishCapture(with: photo.data) }
         }
         await camera.stream.start()
@@ -269,6 +277,7 @@ final class GlassesService: ObservableObject {
         pendingCapture = nil
         await camera?.stream.stop()
         camera = nil
+        photoToken = nil
         continuation.resume(throwing: GlassesError.timedOut)
     }
 
@@ -278,6 +287,7 @@ final class GlassesService: ObservableObject {
         // Kare alindi; kamerayi hemen birak, gozluk pili bosuna gitmesin.
         await camera?.stream.stop()
         camera = nil
+        photoToken = nil
         continuation.resume(returning: data)
     }
 }

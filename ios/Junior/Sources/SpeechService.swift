@@ -29,6 +29,13 @@ final class SpeechService: NSObject, ObservableObject {
     private let synthesizer = AVSpeechSynthesizer()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
+    /// Konusma bittikten sonra beklenecek sessizlik. 1.6 saniye cok kisaydi:
+    /// cumle ortasinda nefes almak kaydi bitiriyordu.
+    private static let silenceAfterSpeech: TimeInterval = 2.8
+    /// Kullanici daha hic konusmadiysa beklenecek sure. Uyandirma sozcugunden
+    /// sonra toparlanmak birkac saniye surebiliyor.
+    private static let silenceBeforeSpeech: TimeInterval = 6
+
     private var silenceTimer: Timer?
     private var onFinish: ((String) -> Void)?
     private var player: AVAudioPlayer?
@@ -81,7 +88,7 @@ final class SpeechService: NSObject, ObservableObject {
         return true
     }
 
-    /// Dinlemeye baslar. Konusma bitince (1.6 sn sessizlik) metni `onFinish` ile dondurur.
+    /// Dinlemeye baslar. Konusma bitince (2.8 sn sessizlik) metni `onFinish` ile dondurur.
     func startListening(onFinish: @escaping (String) -> Void) async {
         guard state == .idle else { return }
         stopSpeaking()
@@ -142,7 +149,9 @@ final class SpeechService: NSObject, ObservableObject {
 
     private func restartSilenceTimer() {
         silenceTimer?.invalidate()
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: 1.6, repeats: false) { [weak self] _ in
+        // Henuz tek kelime duyulmadiysa daha uzun bekle.
+        let wait = partialText.isEmpty ? Self.silenceBeforeSpeech : Self.silenceAfterSpeech
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.finishListening() }
         }
     }

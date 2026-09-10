@@ -93,7 +93,12 @@ final class WakeWordService: ObservableObject {
     /// hata veriyor ve hicbir metin gelmiyor. Elle mikrofon calisirken
     /// uyandirmanin hic duymamasinin en olasi sebebi bu. Iki kez ust uste
     /// erken ve sessiz olen cevrimden sonra sunucu tanimasina gecilir.
-    private var preferOnDevice = true
+    /// Cihaz ustu tanimanin bu telefonda calisip calismadigi hatirlanir.
+    /// Hatirlanmazsa her aciliste once bozuk olan deneniyor ve ilk iki cevrim
+    /// bosa gidiyor - "Hey Junior" o sirada hic duyulmuyor.
+    private static let onDeviceBrokenKey = "junior.onDeviceRecognitionBroken"
+
+    private var preferOnDevice = !UserDefaults.standard.bool(forKey: WakeWordService.onDeviceBrokenKey)
     private var quickSilentFailures = 0
     private var sawTranscript = false
     private var cycleStarted = Date()
@@ -210,6 +215,8 @@ final class WakeWordService: ObservableObject {
         quickSilentFailures += 1
         if quickSilentFailures >= 2 {
             preferOnDevice = false
+            // Bir daha denemeyelim: sonraki aciliste dogrudan sunucu tanimasi.
+            UserDefaults.standard.set(true, forKey: Self.onDeviceBrokenKey)
             message = "Cihaz üstü tanıma çalışmadı; sunucu tanımasına geçildi."
         }
     }
