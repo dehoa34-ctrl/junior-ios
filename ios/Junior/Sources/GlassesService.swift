@@ -176,7 +176,7 @@ final class GlassesService: ObservableObject {
     }
 
     /// Cihaz akışı bir gözlük bildirene kadar bekler; en fazla 15 saniye.
-    private func waitForDevice(_ wearables: Wearables) async {
+    private func waitForDevice(_ wearables: any WearablesInterface) async {
         let deadline = Date().addingTimeInterval(15)
         for await devices in wearables.devicesStream() {
             if !devices.isEmpty {
@@ -191,7 +191,7 @@ final class GlassesService: ObservableObject {
     ///
     /// Beklemeye rağmen zamanlama kaçabiliyor ve tek denemede vazgeçmek
     /// kullanıcıyı "no eligible device available" ile baş başa bırakıyor.
-    private func createSessionWithRetry(_ wearables: Wearables,
+    private func createSessionWithRetry(_ wearables: any WearablesInterface,
                                         _ selector: AutoDeviceSelector) async throws -> DeviceSession {
         var lastError: Error?
         for attempt in 0..<3 {
