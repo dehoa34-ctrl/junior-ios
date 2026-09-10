@@ -59,7 +59,10 @@ private final class RequestBox: @unchecked Sendable {
 final class WakeWordService: ObservableObject {
     /// Apple sürekli tanımayı belli bir süreden sonra kesiyor; kendimiz
     /// yenilemezsek dinleme sessizce ölür.
-    private static let restartAfter: TimeInterval = 50
+    /// Yedek yenileme. Asil yenileme tanima oturumu bittiginde (isFinal ya da
+    /// hata) aninda oluyor; bu yalniz hicbiri gelmezse devreye giren emniyet.
+    /// Apple sureyi 1 dakika civarinda sinirliyor, altinda kalmali.
+    private static let restartAfter: TimeInterval = 45
 
     /// Gecici bir aksaklikta yeniden deneme araligi. 50 saniye beklemek,
     /// telefon cepteyken uyandirma sozcugunu pratikte olu birakir.
@@ -190,6 +193,12 @@ final class WakeWordService: ObservableObject {
                         self.sawTranscript = true
                         self.quickSilentFailures = 0
                         self.inspect(result.bestTranscription.formattedString)
+                        // Tanima bir duraklamadan sonra oturumu KENDISI
+                        // bitiriyor (ozellikle sunucu tanimasi). Bu fark
+                        // edilmezse servis 50 saniyelik zamanlayici gelene
+                        // kadar sagir kaliyor: "uygulama acikken Hey Junior
+                        // dedim ama duymadi" sikayetinin sebebi buydu.
+                        if result.isFinal { self.restartCycle() }
                     }
                     if error != nil {
                         self.registerCycleError()

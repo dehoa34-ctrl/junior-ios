@@ -210,6 +210,14 @@ final class WakeWordMatchingTests: XCTestCase {
         }
     }
 
+    func testCommonMishearingsStillTrigger() {
+        // Sunucu tanimasi "junior"i cesitli sekillerde yaziyor; hepsi
+        // uyandirmali, yoksa kullanici konusuyor ama hicbir sey olmuyor.
+        for text in ["junyor", "juniyor", "hey junyor", "hey jünior", "Jünior"] {
+            XCTAssertTrue(detects(text), "tetiklemeliydi: \(text)")
+        }
+    }
+
     @MainActor
     func testServiceStartsIdle() {
         let service = WakeWordService()
