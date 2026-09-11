@@ -23,29 +23,6 @@ enum WakeWord {
     }
 }
 
-/// Tanıma isteğini ses iş parçacığıyla paylaşan kilitli kutu.
-///
-/// Mikrofon kanalı (tap) artık döngüler arasında ayakta kalıyor, dolayısıyla
-/// kapanış her seferinde **farklı** bir isteğe yazmak zorunda. Kapanış gerçek
-/// zamanlı ses iş parçacığında koşuyor; @MainActor bir özelliğe doğrudan
-/// erişmek veri yarışı olurdu.
-private final class RequestBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var request: SFSpeechAudioBufferRecognitionRequest?
-
-    func set(_ value: SFSpeechAudioBufferRecognitionRequest?) {
-        lock.lock(); defer { lock.unlock() }
-        request = value
-    }
-
-    func append(_ buffer: AVAudioPCMBuffer) {
-        lock.lock()
-        let current = request
-        lock.unlock()
-        current?.append(buffer)
-    }
-}
-
 /// "Hey Junior" uyandırma sözcüğü — iOS'un kendi konuşma tanımasıyla.
 ///
 /// Sürekli dinler, gelen metinde uyandırma ifadesini arar. Porcupine gibi
@@ -81,17 +58,10 @@ final class WakeWordService: ObservableObject {
     var onDetected: (() -> Void)?
 
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "tr-TR"))
-    private let engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var restartTimer: Timer?
     private var paused = false
-    private let box = RequestBox()
-    /// Ses motoru calisiyor mu. Motor dongular arasinda **kapatilmiyor**:
-    /// telefon kilitliyken iOS yeni bir kayit oturumu acmaya izin vermiyor,
-    /// dolayisiyla her yenilemede mikrofonu birakip yeniden almak ilk
-    /// yenilemede uyandirmayi olduruyordu.
-    private var engineRunning = false
     /// Cihaz ustu tanima "destekleniyor" deyip calismayabiliyor: gorev aninda
     /// hata veriyor ve hicbir metin gelmiyor. Elle mikrofon calisirken
     /// uyandirmanin hic duymamasinin en olasi sebebi bu. Iki kez ust uste
@@ -146,12 +116,14 @@ final class WakeWordService: ObservableObject {
         teardown()
     }
 
-    /// Konuşma tanıma mikrofonu isteyince bırakılmalı; iki tanıma oturumu
-    /// aynı anda mikrofonu tutamaz.
+    /// Konuşma tanıma devralacak. **Mikrofon bırakılmaz**: iOS kilitli
+    /// telefonda yeni bir kayıt oturumu açtırmıyor, dolayısıyla bırakıp
+    /// yeniden almak ekran kapalıyken "mikrofon başlatılamadı" ile
+    /// sonuçlanıyordu. Yalnız tanıma oturumu kapanır, kanal açık kalır.
     func pauseForRecording() {
         guard running else { return }
         paused = true
-        teardown()
+        endRecognition()
     }
 
     func resumeAfterRecording() {
@@ -171,8 +143,6 @@ final class WakeWordService: ObservableObject {
             return
         }
         do {
-            try startEngineIfNeeded()
-
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
             // Varsa cihaz üstünde kalsın: sesi buluta göndermemek hem gizlilik
@@ -182,7 +152,8 @@ final class WakeWordService: ObservableObject {
             usingOnDevice = preferOnDevice && recognizer.supportsOnDeviceRecognition
             request.requiresOnDeviceRecognition = usingOnDevice
             self.request = request
-            box.set(request)
+            // Mikrofon hub'in; burada yalniz "gelen sesi bu istege yaz" deniyor.
+            try MicrophoneHub.shared.attach(request)
             sawTranscript = false
             cycleStarted = Date()
 
@@ -234,46 +205,17 @@ final class WakeWordService: ObservableObject {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { lastHeard = String(trimmed.suffix(40)) }
         guard WakeWord.matches(transcript) else { return }
-        // Devraliacak olan konusma tanima mikrofonu isteyecek; burada tam
-        // birakmak gerekiyor.
-        // Aynı oturumda tekrar tetiklenmesin: dinlemeyi bırakıp haber ver.
-        teardown()
+        // Aynı oturumda tekrar tetiklenmesin: tanımayı bırak, mikrofonu değil.
+        endRecognition()
         onDetected?()
     }
 
     // Varsayilan argumanda Self kullanilamiyor (covariant Self); tur adi acik yazilir.
-    /// Ses motorunu yalnız kapalıysa başlatır. Ses oturumu bir kez açılır ve
-    /// açık kalır; kilitli telefonda mikrofonu yeniden istemek başarısız oluyor.
-    private func startEngineIfNeeded() throws {
-        guard !engineRunning else { return }
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .spokenAudio,
-                                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
-        try session.setActive(true, options: .notifyOthersOnDeactivation)
-
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [box] buffer, _ in
-            box.append(buffer)
-        }
-        engine.prepare()
-        try engine.start()
-        engineRunning = true
-    }
-
-    private func stopEngine() {
-        box.set(nil)
-        engine.inputNode.removeTap(onBus: 0)
-        if engine.isRunning { engine.stop() }
-        engineRunning = false
-    }
-
     /// Yalnız tanımayı bitirir; mikrofon elde kalır.
     private func endRecognition() {
         restartTimer?.invalidate()
         restartTimer = nil
-        box.set(nil)
+        MicrophoneHub.shared.detach()
         request?.endAudio()
         request = nil
         task?.cancel()
@@ -301,6 +243,6 @@ final class WakeWordService: ObservableObject {
     /// orada gerçekten bırakmak gerekiyor.
     private func teardown() {
         endRecognition()
-        stopEngine()
+        MicrophoneHub.shared.stop()
     }
 }

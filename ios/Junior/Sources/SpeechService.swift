@@ -25,7 +25,6 @@ final class SpeechService: NSObject, ObservableObject {
     var remoteTTS: ((String) async throws -> Data)?
 
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "tr-TR"))
-    private let engine = AVAudioEngine()
     private let synthesizer = AVSpeechSynthesizer()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -102,24 +101,15 @@ final class SpeechService: NSObject, ObservableObject {
         partialText = ""
 
         do {
-            let session = AVAudioSession.sharedInstance()
-            // allowBluetooth = HFP; gozluk mikrofonunun yonlendirilebilmesi icin gerekli.
-            try session.setCategory(.playAndRecord, mode: .spokenAudio,
-                                    options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
             self.request = request
 
-            let input = engine.inputNode
-            let format = input.outputFormat(forBus: 0)
-            input.removeTap(onBus: 0)
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-                request.append(buffer)
-            }
-            engine.prepare()
-            try engine.start()
+            // Mikrofon MicrophoneHub'in ve uyandirma dinlemesiyle paylasiliyor.
+            // Kendi motorumuzu kurmak, kilitli telefonda yeni kayit oturumu
+            // acmak demek olurdu - iOS buna izin vermiyor ve devralma
+            // "mikrofon baslatilamadi" ile dusuyordu.
+            try MicrophoneHub.shared.attach(request)
             state = .listening
             // Ses oturumu acildiktan sonra bakiyoruz: yol ancak o zaman kesinlesir.
             route.beginListening()
@@ -173,8 +163,8 @@ final class SpeechService: NSObject, ObservableObject {
         route.endListening()
         silenceTimer?.invalidate()
         silenceTimer = nil
-        engine.inputNode.removeTap(onBus: 0)
-        if engine.isRunning { engine.stop() }
+        // Yalniz yazmayi birak; mikrofon uyandirma dinlemesine geri donecek.
+        MicrophoneHub.shared.detach()
         request?.endAudio()
         request = nil
         task?.cancel()
@@ -228,6 +218,10 @@ final class SpeechService: NSObject, ObservableObject {
     }
 
     private func configurePlayback() {
+        // Mikrofon acikken kategoriyi .playback'e cevirmek kayit kanalini
+        // kapatir ve ekran kapaliyken geri acilamaz. Hub calisiyorsa oturuma
+        // hic dokunmuyoruz: .playAndRecord zaten calmayi da destekliyor.
+        guard !MicrophoneHub.shared.isRunning else { return }
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio,
                                                             options: [.allowBluetooth, .allowBluetoothA2DP])
