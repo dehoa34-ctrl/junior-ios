@@ -85,12 +85,18 @@ final class GlassesService: ObservableObject {
     func requestCameraPermission() async {
         do {
             let wearables = Wearables.shared
+            // Izin istegi BAGLI bir cihaz gerektiriyor (PermissionError
+            // .noDeviceWithConnection). Gozluk uykudaysa hemen hata veriyordu;
+            // once akisin bir cihaz bildirmesini bekle.
+            state = .connecting
+            await waitForDevice(wearables)
+
             var status = try await wearables.checkPermissionStatus(.camera)
-            permissionInfo = String(describing: status)
-            if String(describing: status).lowercased().contains("granted") == false {
+            if status != .granted {
                 status = try await wearables.requestPermission(.camera)
-                permissionInfo = String(describing: status)
             }
+            permissionInfo = status == .granted ? "verildi" : "verilmedi"
+            if case .failed = state {} else { state = .idle }
         } catch {
             permissionInfo = "istenemedi"
             let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
@@ -146,11 +152,11 @@ final class GlassesService: ObservableObject {
             }
 
             step = "kamera izni"
-            let permission = try await wearables.checkPermissionStatus(.camera)
-            permissionInfo = String(describing: permission)
-            if !permissionInfo.lowercased().contains("granted") {
-                permissionInfo = String(describing: try await wearables.requestPermission(.camera))
+            var permission = try await wearables.checkPermissionStatus(.camera)
+            if permission != .granted {
+                permission = try await wearables.requestPermission(.camera)
             }
+            permissionInfo = permission == .granted ? "verildi" : "verilmedi"
 
             // Seciciyi **beklemeden once** kur: listesini devicesStream()'den
             // dolduruyor, dolayisiyla akisi dinlemeye simdi baslamali.
@@ -203,6 +209,13 @@ final class GlassesService: ObservableObject {
     /// zaman gözlüğün kutuda ya da uykuda olması.
     private static func hint(for error: Error) -> String {
         let text = String(describing: error).lowercased()
+        if text.contains("nodevicewithconnection") || text.contains("no device with connection") {
+            return " Gözlük eşleşmiş ama bağlı değil: kutudan çıkar, tak ve "
+                + "Meta AI'da şarj yüzdesinin göründüğünü doğrula."
+        }
+        if text.contains("nodevice") {
+            return " Gözlük bulunamadı. Meta AI'da eşleşmiş görünüyor mu?"
+        }
         if text.contains("powered off") || text.contains("disconnected") {
             return " Gözlük kapalı ya da bağlı değil: kutudan çıkar, tak, "
                 + "sapına dokunup uyandır ve Meta AI'da bağlı göründüğünü doğrula."
