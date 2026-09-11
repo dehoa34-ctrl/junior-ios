@@ -38,6 +38,7 @@ final class SpeechService: NSObject, ObservableObject {
     private var silenceTimer: Timer?
     private var onFinish: ((String) -> Void)?
     private var player: AVAudioPlayer?
+    private var cuePlayer: AVAudioPlayer?
     private var remoteSpeakTask: Task<Void, Never>?
 
     override init() {
@@ -221,7 +222,9 @@ final class SpeechService: NSObject, ObservableObject {
         // Mikrofon acikken kategoriyi .playback'e cevirmek kayit kanalini
         // kapatir ve ekran kapaliyken geri acilamaz. Hub calisiyorsa oturuma
         // hic dokunmuyoruz: .playAndRecord zaten calmayi da destekliyor.
-        guard !MicrophoneHub.shared.isRunning else { return }
+        // isRunning degil isWanted: bir kesinti motoru durdurmus olabilir ama
+        // mikrofon hala istenir; kategori degisirse geri acilamaz.
+        guard !MicrophoneHub.shared.isWanted else { return }
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio,
                                                             options: [.allowBluetooth, .allowBluetoothA2DP])
@@ -230,6 +233,45 @@ final class SpeechService: NSObject, ObservableObject {
             // Ses oturumu kurulamazsa yanit yine ekranda okunur; sessizce devam et.
         }
     }
+
+    /// "Seni duydum" sesi.
+    ///
+    /// Ekran kapalıyken titreşim çalışmıyor (iOS arka planda titreşim
+    /// vermiyor); cepteki telefonda uyandırmanın tuttuğunu anlamanın tek yolu
+    /// kulak. Kısa, yükselen iki ton - konuşmayla karışmasın diye.
+    func playCue() {
+        guard let data = Self.cueData, let player = try? AVAudioPlayer(data: data) else { return }
+        player.volume = 0.35
+        cuePlayer = player
+        player.play()
+    }
+
+    private static let cueData: Data? = {
+        let rate = 44_100.0
+        var samples: [Int16] = []
+        for (frequency, duration) in [(660.0, 0.07), (880.0, 0.09)] {
+            let count = Int(rate * duration)
+            for index in 0..<count {
+                // Kısa giriş/çıkış rampası: tık sesi olmasın.
+                let edge = min(1.0, Double(min(index, count - index)) / (rate * 0.008))
+                let value = sin(2 * Double.pi * frequency * Double(index) / rate) * edge * 0.6
+                samples.append(Int16(value * Double(Int16.max)))
+            }
+        }
+        var data = Data()
+        func append<T>(_ value: T) {
+            withUnsafeBytes(of: value) { data.append(contentsOf: $0) }
+        }
+        let bytes = UInt32(samples.count * 2)
+        data.append(contentsOf: Array("RIFF".utf8)); append((36 + bytes).littleEndian)
+        data.append(contentsOf: Array("WAVE".utf8)); data.append(contentsOf: Array("fmt ".utf8))
+        append(UInt32(16).littleEndian); append(UInt16(1).littleEndian); append(UInt16(1).littleEndian)
+        append(UInt32(44_100).littleEndian); append(UInt32(88_200).littleEndian)
+        append(UInt16(2).littleEndian); append(UInt16(16).littleEndian)
+        data.append(contentsOf: Array("data".utf8)); append(bytes.littleEndian)
+        for sample in samples { append(sample.littleEndian) }
+        return data
+    }()
 
     func stopSpeaking() {
         remoteSpeakTask?.cancel()

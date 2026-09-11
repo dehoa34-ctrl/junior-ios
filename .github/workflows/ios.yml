@@ -45,6 +45,11 @@ jobs:
           xcodebuild -project Junior.xcodeproj -scheme Junior             -destination "generic/platform=iOS"             -clonedSourcePackagesDirPath SourcePackages             -resolvePackageDependencies >/dev/null 2>&1 || true
           echo "===== RegistrationState / PermissionStatus ====="
           grep -rhA 12 "enum RegistrationState\|struct RegistrationState\|enum PermissionStatus\|struct PermissionStatus"             SourcePackages --include=*.swiftinterface --include=*.h 2>/dev/null | head -60 || echo "bulunamadi"
+          echo "===== Oturum durumu ve kamera imzalari ====="
+          grep -rhA 10 -E "enum [A-Za-z]*SessionState|enum [A-Za-z]*StreamState"             SourcePackages --include=*.swiftinterface 2>/dev/null | head -40 || true
+          grep -rhE "func (capturePhoto|stateStream|devicesStream|addCamera|removeCamera)"             SourcePackages --include=*.swiftinterface 2>/dev/null | sort -u | head -20 || true
+          echo "===== Isik / gosterge / dokunus API'si ====="
+          grep -rhoE "(func|var|case) [A-Za-z]*(Led|LED|Light|Indicator|Haptic|Vibrat)[A-Za-z]*"             SourcePackages --include=*.swiftinterface 2>/dev/null | sort -u | head -20 || echo "yok"
 
       # Testler once: gecmezse .ipa uretilmesin.
       - name: Birim testleri (simulator)

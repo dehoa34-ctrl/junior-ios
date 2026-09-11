@@ -232,13 +232,11 @@ final class GlassesService: ObservableObject {
 
     /// Cihaz akışı bir gözlük bildirene kadar bekler; en fazla 15 saniye.
     private func waitForDevice(_ wearables: any WearablesInterface) async {
-        let deadline = Date().addingTimeInterval(15)
-        for await devices in wearables.devicesStream() {
-            if !devices.isEmpty {
-                deviceInfo = devices.map { String(describing: $0) }.joined(separator: ", ")
+        await withDeadline(seconds: 15) { [weak self] in
+            for await devices in wearables.devicesStream() where !devices.isEmpty {
+                self?.deviceInfo = devices.map { String(describing: $0) }.joined(separator: ", ")
                 return
             }
-            if Date() > deadline { return }
         }
     }
 
@@ -260,13 +258,15 @@ final class GlassesService: ObservableObject {
         throw lastError ?? GlassesError.notConnected
     }
 
-    /// Oturum `.started` olana kadar bekler; en fazla 10 saniye. Süre dolarsa
-    /// yine de denenir - beklemek hiç denememekten iyi ama sonsuz olmamalı.
+    /// Oturum başlayana kadar bekler; en fazla 10 saniye. Süre dolarsa yine de
+    /// denenir - beklemek hiç denememekten iyi ama sonsuz olmamalı.
     private func waitUntilStarted(_ session: DeviceSession) async {
-        let deadline = Date().addingTimeInterval(10)
-        for await sessionState in session.stateStream() {
-            if String(describing: sessionState).lowercased().contains("start") { return }
-            if Date() > deadline { return }
+        await withDeadline(seconds: 10) {
+            for await sessionState in session.stateStream() {
+                let text = String(describing: sessionState).lowercased()
+                // "starting" de "start" içeriyor; yalnız tamamlanmış hâli say.
+                if text == "started" || text.hasSuffix(".started") { return }
+            }
         }
     }
 
@@ -286,15 +286,25 @@ final class GlassesService: ObservableObject {
         guard pendingCapture == nil else { throw GlassesError.busy }
 
         state = .capturing
-        defer { state = .ready }
+        defer { if self.session != nil { state = .ready } }
 
-        let configuration = StreamConfiguration(videoCodec: .raw, resolution: .low, frameRate: 24)
-        guard let camera = try await session.addCamera(config: configuration) else {
-            throw GlassesError.cameraUnavailable
-        }
-        self.camera = camera
-        photoToken = camera.stream.photoDataPublisher.listen { [weak self] photo in
-            Task { @MainActor in await self?.finishCapture(with: photo.data) }
+        // Kamera oturum boyunca bir kez eklenir ve yeniden kullanılır. Her
+        // soruda yeniden eklemek ikinci soruda "kamera zaten var" riskiydi;
+        // yalnız akış durdurulup yeniden başlatılıyor.
+        let camera: Camera
+        if let existing = self.camera {
+            camera = existing
+        } else {
+            let configuration = StreamConfiguration(videoCodec: .raw, resolution: .low, frameRate: 24)
+            guard let added = try await session.addCamera(config: configuration) else {
+                throw GlassesError.cameraUnavailable
+            }
+            camera = added
+            self.camera = added
+            // Jeton kameranın ömrü boyunca tutulur; bırakılırsa abonelik iptal oluyor.
+            photoToken = added.stream.photoDataPublisher.listen { [weak self] photo in
+                Task { @MainActor in await self?.finishCapture(with: photo.data) }
+            }
         }
         await camera.stream.start()
 
@@ -303,10 +313,9 @@ final class GlassesService: ObservableObject {
 
         return try await withCheckedThrowingContinuation { continuation in
             pendingCapture = continuation
-            Task { await camera.stream.capturePhoto(format: .jpeg) }
-            // Gozluk kareyi hic gondermezse (menzil disi, pil, firmware)
-            // continuation asla devam etmez ve cagiran taraf sonsuza kadar
-            // bekler. Eller serbest dongusu icin bu sessiz olum demek.
+            Task { [weak self] in await self?.requestFrame(camera, generation: generation) }
+            // Gözlük kareyi hiç göndermezse (menzil dışı, pil, uyku) devam
+            // noktası asla sürmez ve çağıran taraf sonsuza kadar bekler.
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(Self.captureTimeout * 1_000_000_000))
                 await self?.failCaptureIfPending(generation: generation)
@@ -314,28 +323,43 @@ final class GlassesService: ObservableObject {
         }
     }
 
-    /// Sure dolduysa bekleyen istegi hatayla kapatir. finishCapture ile ayni
-    /// continuation'i paylasir; hangisi once gelirse pendingCapture'i alir,
-    /// digeri guard'a takilir - continuation iki kez devam ettirilemez.
+    /// Kare ister; gözlük kabul etmezse kısa aralıklarla yeniden dener.
     ///
-    /// `generation` kontrolu, erken biten bir cekimin gecikmis gorevinin
-    /// siradaki cekimi iptal etmesini engeller.
-    private func failCaptureIfPending(generation: Int) async {
+    /// capturePhoto isteği kabul edip etmediğini döndürüyor (akış henüz
+    /// ısınmadıysa hayır). Dönüş değeri atılıyordu: reddedilen istek için 20
+    /// saniye boşuna beklenip "kare gelmedi" deniyordu.
+    private func requestFrame(_ camera: Camera, generation: Int) async {
+        for attempt in 0..<8 {
+            guard generation == captureGeneration, pendingCapture != nil else { return }
+            let outcome = await camera.stream.capturePhoto(format: .jpeg)
+            // Belgelerde Bool; başka bir tip dönerse kabul edilmiş sayılır.
+            if (outcome as Any) as? Bool ?? true { return }
+            if attempt < 7 { try? await Task.sleep(nanoseconds: 500_000_000) }
+        }
+        await failCaptureIfPending(generation: generation, error: .rejected)
+    }
+
+    /// Bekleyen isteği hatayla kapatır. finishCapture ile aynı devam noktasını
+    /// paylaşır; hangisi önce gelirse pendingCapture'ı alır, diğeri guard'a
+    /// takılır. `generation`, erken biten bir çekimin gecikmiş görevinin
+    /// sıradaki çekimi iptal etmesini engeller.
+    ///
+    /// Kare gelmediyse ya da reddedildiyse oturum tamamen bırakılır: bir sonraki
+    /// soru temiz bir oturumla başlasın. Uykuya dalmış oturum ya da yarım kalmış
+    /// kamera üzerine yeniden denemek aynı hatayı tekrarlıyordu.
+    private func failCaptureIfPending(generation: Int, error: GlassesError = .timedOut) async {
         guard generation == captureGeneration, let continuation = pendingCapture else { return }
         pendingCapture = nil
-        await camera?.stream.stop()
-        camera = nil
-        photoToken = nil
-        continuation.resume(throwing: GlassesError.timedOut)
+        await disconnect()
+        continuation.resume(throwing: error)
     }
 
     private func finishCapture(with data: Data) async {
         guard let continuation = pendingCapture else { return }
         pendingCapture = nil
-        // Kare alindi; kamerayi hemen birak, gozluk pili bosuna gitmesin.
+        // Kare alındı: akışı durdur (gözlük ışığı sönsün, pil gitmesin) ama
+        // kamerayı bırakma; sonraki soruda yeniden eklemek gerekmesin.
         await camera?.stream.stop()
-        camera = nil
-        photoToken = nil
         continuation.resume(returning: data)
     }
 }
@@ -345,6 +369,7 @@ enum GlassesError: LocalizedError {
     case busy
     case cameraUnavailable
     case timedOut
+    case rejected
 
     var errorDescription: String? {
         switch self {
@@ -356,6 +381,49 @@ enum GlassesError: LocalizedError {
             return "Gözlük kamerası açılamadı. Meta AI'da kamera izni verilmiş mi?"
         case .timedOut:
             return "Gözlükten kare gelmedi. Menzil dışında ya da pili bitmiş olabilir."
+        case .rejected:
+            return "Gözlük kare vermedi. Gözlüğü uyandırıp tekrar sor."
+        }
+    }
+}
+
+/// Tek sefer devam ettirilen devam noktası: iki görevden hangisi önce biterse
+/// o devam ettirir, diğeri sessizce geçer.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume() {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume()
+    }
+}
+
+/// Bir işi en fazla `seconds` saniye bekler.
+///
+/// `for await` içine konan süre kontrolü yalnız akıştan yeni bir değer
+/// geldiğinde çalışıyordu: akış susarsa (gözlük uykudayken olabiliyor) bekleme
+/// sonsuza uzuyor ve bağlantı hiç dönmüyordu. Burada iş iptali dinlemese bile
+/// çağıran taraf zamanında döner.
+@MainActor
+private func withDeadline(seconds: Double, _ work: @escaping @MainActor () async -> Void) async {
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        let once = ResumeOnce(continuation)
+        let job = Task { @MainActor in
+            await work()
+            once.resume()
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            job.cancel()
+            once.resume()
         }
     }
 }

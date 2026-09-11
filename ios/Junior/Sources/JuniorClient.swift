@@ -143,6 +143,9 @@ actor JuniorClient {
     /// Hata durumunda cagiran taraf iOS'un yerlesik sesine duser.
     func tts(url: URL, token: String, text: String) async throws -> Data {
         var request = URLRequest(url: url)
+        // Ses gelmezse yerleşik sese düşmek için uzun bekleme yok: oturumun
+        // 100 saniyelik sınırı kullanıcıyı sessizlikte bırakıyordu.
+        request.timeoutInterval = 15
         request.httpMethod = "POST"
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

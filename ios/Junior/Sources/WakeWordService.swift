@@ -69,9 +69,18 @@ final class WakeWordService: ObservableObject {
     /// Cihaz ustu tanimanin bu telefonda calisip calismadigi hatirlanir.
     /// Hatirlanmazsa her aciliste once bozuk olan deneniyor ve ilk iki cevrim
     /// bosa gidiyor - "Hey Junior" o sirada hic duyulmuyor.
-    private static let onDeviceBrokenKey = "junior.onDeviceRecognitionBroken"
+    private static let onDeviceBrokenKey = "junior.onDeviceRecognitionBrokenAt"
+    /// Cihaz üstü model sonradan inebilir (Türkçe klavye diktesi açılınca).
+    /// Bayrak kalıcı olunca bir daha hiç denenmiyordu; bir gün sonra yeniden dene.
+    private static let onDeviceRetryAfter: TimeInterval = 24 * 3600
 
-    private var preferOnDevice = !UserDefaults.standard.bool(forKey: WakeWordService.onDeviceBrokenKey)
+    private var preferOnDevice: Bool = {
+        let brokenAt = UserDefaults.standard.double(forKey: WakeWordService.onDeviceBrokenKey)
+        return brokenAt == 0
+            || Date().timeIntervalSince1970 - brokenAt > WakeWordService.onDeviceRetryAfter
+    }()
+    /// Art arda hızlı biten hataların sayısı; geri çekilme süresini belirler.
+    private var quickErrorStreak = 0
     private var quickSilentFailures = 0
     private var sawTranscript = false
     private var cycleStarted = Date()
@@ -163,6 +172,7 @@ final class WakeWordService: ObservableObject {
                     if let result {
                         self.sawTranscript = true
                         self.quickSilentFailures = 0
+                        self.quickErrorStreak = 0
                         self.inspect(result.bestTranscription.formattedString)
                         // Tanima bir duraklamadan sonra oturumu KENDISI
                         // bitiriyor (ozellikle sunucu tanimasi). Bu fark
@@ -173,7 +183,7 @@ final class WakeWordService: ObservableObject {
                     }
                     if error != nil {
                         self.registerCycleError()
-                        self.restartCycle()
+                        self.restartAfterError()
                     }
                 }
             }
@@ -182,7 +192,9 @@ final class WakeWordService: ObservableObject {
             // Mikrofon baska bir uygulamadaysa (gelen cagri, sesli mesaj) bu
             // gecicidir; birakip olmek yerine yeniden dene.
             message = "Uyandırma dinlemesi başlatılamadı; yeniden denenecek."
-            teardown()
+            // Mikrofonu bırakma: hub bir kesintiden sonra kendini toparlıyor ve
+            // stop() ona "artık istenmiyor" demek olurdu.
+            endRecognition()
             scheduleRestart(after: Self.retryAfter)
         }
     }
@@ -196,7 +208,7 @@ final class WakeWordService: ObservableObject {
         if quickSilentFailures >= 2 {
             preferOnDevice = false
             // Bir daha denemeyelim: sonraki aciliste dogrudan sunucu tanimasi.
-            UserDefaults.standard.set(true, forKey: Self.onDeviceBrokenKey)
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.onDeviceBrokenKey)
             message = "Cihaz üstü tanıma çalışmadı; sunucu tanımasına geçildi."
         }
     }
@@ -210,7 +222,6 @@ final class WakeWordService: ObservableObject {
         onDetected?()
     }
 
-    // Varsayilan argumanda Self kullanilamiyor (covariant Self); tur adi acik yazilir.
     /// Yalnız tanımayı bitirir; mikrofon elde kalır.
     private func endRecognition() {
         restartTimer?.invalidate()
@@ -222,11 +233,31 @@ final class WakeWordService: ObservableObject {
         task = nil
     }
 
+    // Varsayilan argumanda Self kullanilamiyor (covariant Self); tur adi acik yazilir.
     private func scheduleRestart(after seconds: TimeInterval = WakeWordService.restartAfter) {
         restartTimer?.invalidate()
         restartTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.restartCycle() }
         }
+    }
+
+    /// Hatadan sonra yeniden başlatır; hızlı art arda hatalarda bekleyerek.
+    ///
+    /// Sunucu tanıması reddedince (Apple'ın günlük sınırı, ağ yok) hata anında
+    /// dönüyor. Anında yeniden başlatmak beklemesiz bir döngüye dönüşüyordu:
+    /// saniyede defalarca istek, pil ve Apple sınırına daha hızlı dayanma.
+    /// Sessiz odadaki "konuşma algılanmadı" hatası birkaç saniye sonra geldiği
+    /// için hızlı sayılmaz ve bekletilmez.
+    private func restartAfterError() {
+        let quick = Date().timeIntervalSince(cycleStarted) < 2
+        quickErrorStreak = quick ? quickErrorStreak + 1 : 0
+        guard quickErrorStreak > 0 else {
+            restartCycle()
+            return
+        }
+        let delay = min(30, pow(2, Double(min(quickErrorStreak, 5))))
+        endRecognition()
+        scheduleRestart(after: delay)
     }
 
     private func restartCycle() {
@@ -238,9 +269,8 @@ final class WakeWordService: ObservableObject {
     }
 
 
-    /// Tam durdurma: tanıma **ve** mikrofon bırakılır. Yalnız stop() ve
-    /// pauseForRecording() çağırır; konuşma tanıma mikrofonu isteyeceği için
-    /// orada gerçekten bırakmak gerekiyor.
+    /// Tam durdurma: tanıma **ve** mikrofon bırakılır. Yalnız stop() çağırır;
+    /// uyandırma tamamen kapatıldığında mikrofon gerçekten bırakılır.
     private func teardown() {
         endRecognition()
         MicrophoneHub.shared.stop()

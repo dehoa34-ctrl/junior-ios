@@ -117,6 +117,12 @@ final class HandsFreeSession: ObservableObject {
     /// Bir adimin takilip kalabilecegi en uzun sure.
     private static let stallTimeout: Double = 60
 
+    /// Adıma göre bekçi süresi. Sunucu Claude'u 90 saniyeye kadar bekliyor;
+    /// 60 saniyelik bekçi yavaş ama geçerli bir yanıtı yarıda bırakıyordu.
+    private static func timeout(for phase: Phase) -> Double {
+        phase == .thinking ? 100 : stallTimeout
+    }
+
     private var watchdog: Task<Void, Never>?
 
     private let wakeWord: WakeWordService
@@ -191,16 +197,26 @@ final class HandsFreeSession: ObservableObject {
         if continuousEnabled, idlePhase == .waiting { continuousActive = true }
         // İki tanıma oturumu aynı anda mikrofonu tutamaz.
         wakeWord.pauseForRecording()
-        // Cepteki telefonda görsel geri bildirim yok; titreşim "seni duydum" der.
+        // Ekran açıkken titreşim, kapalıyken ses: iOS arka planda titreşim
+        // vermiyor, dolayısıyla cepteki telefonda tek geri bildirim kulak.
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        speech.playCue()
 
         Task {
+            // Sesin bitmesini bekle; tanıma "bip"i yazıya dökmeye çalışmasın.
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard self.phase == .listening else { return }
             await self.speech.startListening { [weak self] text in
                 self?.handle(text)
             }
-            // İzin reddi gibi durumlarda dinleme hiç başlamaz; döngüyü kilitleme.
+            // Dinleme hiç başlamadıysa (izin, mikrofon meşgul, tanıma yok)
+            // sürekli sohbeti bitir ve sesle söyle. Bitirilmeden resumeWaiting
+            // hemen yeni bir tur açıyor, o da başarısız oluyordu: beklemesiz,
+            // sonsuza dönen bir döngü - her turda da titreşim.
             if self.speech.state != .listening, self.phase == .listening {
-                self.resumeWaiting()
+                self.continuousActive = false
+                self.phase = .speaking
+                self.speech.speak("Mikrofonu açamadım.")
             }
         }
     }
@@ -262,8 +278,9 @@ final class HandsFreeSession: ObservableObject {
             watchdog = nil
         case .listening, .capturing, .thinking, .speaking:
             watchdog?.cancel()
+            let limit = Self.timeout(for: phase)
             watchdog = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(Self.stallTimeout * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(limit * 1_000_000_000))
                 guard !Task.isCancelled else { return }
                 await self?.recoverFromStall()
             }
@@ -279,6 +296,7 @@ final class HandsFreeSession: ObservableObject {
         phase = idlePhase
         speech.stopSpeaking()
         speech.stopListening()
+        releaseMicrophoneIfIdle()
         wakeWord.resumeAfterRecording()
     }
 
@@ -291,7 +309,15 @@ final class HandsFreeSession: ObservableObject {
             return
         }
         phase = idlePhase
+        releaseMicrophoneIfIdle()
         // Uyandirma hic calismiyorsa bu cagri zaten bir sey yapmaz.
         wakeWord.resumeAfterRecording()
+    }
+
+    /// Uyandırma kapalıyken tur bitince mikrofonu bırakır. Bırakılmazsa elle
+    /// sorulan tek bir sorudan sonra mikrofon açık kalıyordu: turuncu nokta,
+    /// pil tüketimi ve kimsenin dinlemediği bir kanal.
+    private func releaseMicrophoneIfIdle() {
+        if idlePhase == .off { MicrophoneHub.shared.stop() }
     }
 }
