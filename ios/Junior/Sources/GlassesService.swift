@@ -93,7 +93,8 @@ final class GlassesService: ObservableObject {
             }
         } catch {
             permissionInfo = "istenemedi"
-            state = .failed("Kamera izni istenemedi. Meta AI uygulaması açık ve gözlük bağlı mı?")
+            let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            state = .failed("Kamera izni istenemedi: \(detail)\(Self.hint(for: error))")
         }
     }
 
@@ -174,12 +175,30 @@ final class GlassesService: ObservableObject {
             state = .ready
         } catch {
             let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-            let hint = String(describing: error).lowercased().contains("eligible")
-                ? " Gözlüğü tak, bir tuşuna dokunup uyandır ve Meta AI'da bağlı göründüğünü doğrula."
-                : ""
-            state = .failed("\(step) adımında takıldı: \(detail)\(hint)")
+            state = .failed("\(step) adımında takıldı: \(detail)\(Self.hint(for: error))")
             await disconnect()
         }
+    }
+
+    /// SDK'nın İngilizce hatasını kullanıcının yapabileceği bir şeye çevirir.
+    ///
+    /// "all discovered devices are powered off or disconnected" gibi mesajlar
+    /// teknik olarak doğru ama ne yapılacağını söylemiyor; sorun neredeyse her
+    /// zaman gözlüğün kutuda ya da uykuda olması.
+    private static func hint(for error: Error) -> String {
+        let text = String(describing: error).lowercased()
+        if text.contains("powered off") || text.contains("disconnected") {
+            return " Gözlük kapalı ya da bağlı değil: kutudan çıkar, tak, "
+                + "sapına dokunup uyandır ve Meta AI'da bağlı göründüğünü doğrula."
+        }
+        if text.contains("eligible") {
+            return " Gözlüğü tak, bir tuşuna dokunup uyandır ve Meta AI'da bağlı göründüğünü doğrula."
+        }
+        if text.contains("permission") || text.contains("denied") {
+            return " Meta AI > Ayarlar > App connections > Developer mode apps bölümünden "
+                + "Junior'a kamera izni ver."
+        }
+        return ""
     }
 
     /// Cihaz akışı bir gözlük bildirene kadar bekler; en fazla 15 saniye.
