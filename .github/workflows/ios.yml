@@ -36,6 +36,16 @@ jobs:
         working-directory: ios
         run: xcodegen generate --spec project.yml
 
+      # RegistrationState ve PermissionStatus enum'lari belgelerde yok ve
+      # String(describing:) yalniz rawValue basiyor. SDK arayuzunden okuyalim.
+      - name: DAT enum tanimlari
+        working-directory: ios
+        continue-on-error: true
+        run: |
+          xcodebuild -project Junior.xcodeproj -scheme Junior             -destination "generic/platform=iOS"             -clonedSourcePackagesDirPath SourcePackages             -resolvePackageDependencies >/dev/null 2>&1 || true
+          echo "===== RegistrationState / PermissionStatus ====="
+          grep -rhA 12 "enum RegistrationState\|struct RegistrationState\|enum PermissionStatus\|struct PermissionStatus"             SourcePackages --include=*.swiftinterface --include=*.h 2>/dev/null | head -60 || echo "bulunamadi"
+
       # Testler once: gecmezse .ipa uretilmesin.
       - name: Birim testleri (simulator)
         working-directory: ios

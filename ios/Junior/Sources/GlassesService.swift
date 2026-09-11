@@ -116,7 +116,8 @@ final class GlassesService: ObservableObject {
         observingRegistration = true
         Task { [weak self] in
             for await status in Wearables.shared.registrationStateStream() {
-                await MainActor.run { self?.registrationInfo = String(describing: status) }
+                let text = Self.describe(status)
+                await MainActor.run { self?.registrationInfo = text }
             }
         }
     }
@@ -177,6 +178,21 @@ final class GlassesService: ObservableObject {
             let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
             state = .failed("\(step) adımında takıldı: \(detail)\(Self.hint(for: error))")
             await disconnect()
+        }
+    }
+
+    /// Kayıt durumunu okunabilir hâle getirir.
+    ///
+    /// String(describing:) yalnız `RegistrationState(rawValue: 3)` basıyor ve
+    /// ham değerlerin anlamı belgelerde yok; karşılaştırma isimlerle yapılıyor
+    /// ki sıralama değişse bile doğru kalsın.
+    nonisolated private static func describe(_ status: RegistrationState) -> String {
+        switch status {
+        case .registered: return "kayıtlı"
+        case .available: return "kayda hazır"
+        case .registering: return "kayıt sürüyor"
+        case .unavailable: return "kullanılamıyor"
+        @unknown default: return String(describing: status)
         }
     }
 
