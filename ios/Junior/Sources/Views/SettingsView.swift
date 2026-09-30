@@ -91,14 +91,20 @@ struct SettingsView: View {
                     Button("1. Uygulamayı Meta AI'a tanıt") {
                         Task { await glasses.register() }
                     }
-                    Button("2. Kamera izni ver") {
-                        Task { await glasses.requestCameraPermission() }
-                    }
-                    Button("3. Gözlüğe bağlan") {
+                    Button("2. Gözlüğe bağlan ve kamera izni ver") {
                         Task { await glasses.connect() }
                     }
+                    .disabled(glasses.state == .connecting)
                     if case .failed(let reason) = glasses.state {
                         Text(reason).font(.footnote).foregroundStyle(.red)
+                    } else if glasses.state == .connecting {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text(glasses.permissionInfo == "Meta AI'da onay bekleniyor"
+                                 ? "Meta AI'da izni onayla ve Junior'a geri dön…"
+                                 : "Gözlüğe bağlanıyor…")
+                                .font(.footnote)
+                        }
                     } else if glasses.isReady {
                         Label("Gözlük bağlı", systemImage: "checkmark.seal.fill")
                             .foregroundStyle(.green)
@@ -106,11 +112,11 @@ struct SettingsView: View {
                 } header: {
                     Text("Gözlük")
                 } footer: {
-                    Text("İlk kurulumda sırayla: 1'e dokun, Meta AI açılır, onayla ve geri dön. "
-                         + "Sonra 2 ile kamera iznini ver — kayıt ile izin ayrı şeyler, "
-                         + "\"Meta AI'a bağlandı\" yazması iznin verildiği anlamına gelmez. "
-                         + "En son 3 ile bağlan. Sonrasında \"bu ne\" gibi görsel sorularda kare "
-                         + "gözlükten kendiliğinden alınır. Meta AI'da Developer Mode açık olmalı.")
+                    Text("İlk kurulumda: 1'e dokun, Meta AI açılır, onayla ve geri dön. "
+                         + "Sonra gözlük takılıyken 2'ye dokun: önce gözlüğe bağlanır, kamera izni "
+                         + "yoksa Meta AI'ı açar; orada izin ver ve Junior'a geri dön. "
+                         + "Sonrasında \"bu ne\" gibi görsel sorularda kare gözlükten kendiliğinden "
+                         + "alınır. Meta AI'da gözlük için Developer Mode açık olmalı.")
                 }
                 .onAppear { glasses.observeRegistration() }
 

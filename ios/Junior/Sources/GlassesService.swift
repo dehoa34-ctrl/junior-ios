@@ -77,40 +77,60 @@ final class GlassesService: ObservableObject {
         }
     }
 
-    /// Kamera iznini ister. **Kayıttan ayrı bir adım**: Meta AI kayıt
-    /// tamamlandığında "bağlandı" der ama kamera izni ayrıca verilmemişse
-    /// oturum yine kurulamaz. İlk sürümde eksik olan buydu; kullanıcı
-    /// kaydı yapıp "Meta AI'a bağlanmış" görüyor, sonrasında hiçbir şey
-    /// çalışmıyordu.
-    func requestCameraPermission() async {
-        do {
-            let wearables = Wearables.shared
-            // Izin istegi BAGLI bir cihaz gerektiriyor (PermissionError
-            // .noDeviceWithConnection). Gozluk uykudaysa hemen hata veriyordu;
-            // once akisin bir cihaz bildirmesini bekle.
-            state = .connecting
-            await waitForDevice(wearables)
+    /// Meta AI'a gidip dönmek için verilen süre. Kullanıcı orada izin ekranını
+    /// okuyup onaylıyor; kısa olursa onay yarıda kesilir.
+    private static let permissionTimeout: Double = 120
 
-            var status = try await wearables.checkPermissionStatus(.camera)
-            if status != .granted {
-                status = try await wearables.requestPermission(.camera)
+    private func ensureCameraPermission() async throws {
+        let wearables = Wearables.shared
+        var status = try await wearables.checkPermissionStatus(.camera)
+        if status != .granted {
+            permissionInfo = "Meta AI'da onay bekleniyor"
+            status = try await requestPermission(wearables, seconds: Self.permissionTimeout)
+        }
+        permissionInfo = status == .granted ? "verildi" : "verilmedi"
+        guard status == .granted else { throw GlassesError.permissionDenied }
+    }
+
+    /// requestPermission, Meta AI'dan dönüş gelmezse hiç bitmiyor; süre sınırı
+    /// olmadan ekran "bağlanıyor"da kalıyordu.
+    private func requestPermission(_ wearables: any WearablesInterface, seconds: Double) async throws -> PermissionStatus {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<PermissionStatus, Error>) in
+            let once = ResumeOnceThrowing(continuation)
+            let job = Task { @MainActor in
+                do {
+                    once.resume(.success(try await wearables.requestPermission(.camera)))
+                } catch {
+                    once.resume(.failure(error))
+                }
             }
-            permissionInfo = status == .granted ? "verildi" : "verilmedi"
-            if case .failed = state {} else { state = .idle }
-        } catch {
-            permissionInfo = "istenemedi"
-            let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-            state = .failed("Kamera izni istenemedi: \(detail)\(Self.hint(for: error))")
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                job.cancel()
+                once.resume(.failure(GlassesError.permissionTimedOut))
+            }
         }
     }
 
+    nonisolated private static func detail(_ error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+    }
+
     /// Meta AI'dan donen adresi SDK'ya iletir. JuniorApp onOpenURL'den cagirir.
+    ///
+    /// Süzgeç yok: SDK'nın güncel örneği (BirdSpotter) de her adresi iletiyor,
+    /// SDK kendisine ait olmayanı yok sayıyor. Yalnız "metaWearablesAction"
+    /// içerenleri iletmek, bu parametreyi taşımayan bir izin yanıtının kaybolup
+    /// isteğin sonsuza kadar beklemesine yol açabiliyordu. junior://pair
+    /// buraya hiç gelmez (JuniorApp ayırıyor).
     static func handleCallback(_ url: URL) {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.queryItems?.contains(where: { $0.name == "metaWearablesAction" }) == true else {
-            return
+        Task {
+            do {
+                _ = try await Wearables.shared.handleUrl(url)
+            } catch {
+                NSLog("Junior: Meta AI dönüşü işlenemedi: %@", String(describing: error))
+            }
         }
-        Task { _ = try? await Wearables.shared.handleUrl(url) }
     }
 
     private var observingRegistration = false
@@ -151,13 +171,6 @@ final class GlassesService: ObservableObject {
                 return
             }
 
-            step = "kamera izni"
-            var permission = try await wearables.checkPermissionStatus(.camera)
-            if permission != .granted {
-                permission = try await wearables.requestPermission(.camera)
-            }
-            permissionInfo = permission == .granted ? "verildi" : "verilmedi"
-
             // Seciciyi **beklemeden once** kur: listesini devicesStream()'den
             // dolduruyor, dolayisiyla akisi dinlemeye simdi baslamali.
             let selector = AutoDeviceSelector(wearables: wearables)
@@ -173,17 +186,39 @@ final class GlassesService: ObservableObject {
             let session = try await createSessionWithRetry(wearables, selector)
 
             step = "oturum başlatma"
+            observeErrors(session)
             try await session.start()
             self.session = session
 
             // start() donmesi oturumun hazir oldugu anlamina gelmiyor.
             step = "oturumun hazır olması"
             await waitUntilStarted(session)
+
+            // Izin oturum basladiktan SONRA (SDK ornegindeki sira).
+            step = "kamera izni"
+            try await ensureCameraPermission()
             state = .ready
         } catch {
-            let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-            state = .failed("\(step) adımında takıldı: \(detail)\(Self.hint(for: error))")
+            if step == "kamera izni" { permissionInfo = "istenemedi" }
+            state = .failed("\(step) adımında takıldı: \(Self.detail(error))\(Self.hint(for: error))")
             await disconnect()
+        }
+    }
+
+    private var errorTask: Task<Void, Never>?
+
+    /// Oturum hatalarını dinler. Dinlenmezse "gözlükteki uygulamayı güncelle"
+    /// gibi tek seferlik hatalar kayboluyor ve uygulama sessizce takılıyordu.
+    private func observeErrors(_ session: DeviceSession) {
+        errorTask?.cancel()
+        errorTask = Task { [weak self] in
+            for await error in session.errorStream() {
+                let text = Self.detail(error)
+                await MainActor.run {
+                    guard let self else { return }
+                    self.state = .failed("Gözlük oturumu hatası: \(text)\(Self.hint(for: error))")
+                }
+            }
         }
     }
 
@@ -207,8 +242,17 @@ final class GlassesService: ObservableObject {
     /// "all discovered devices are powered off or disconnected" gibi mesajlar
     /// teknik olarak doğru ama ne yapılacağını söylemiyor; sorun neredeyse her
     /// zaman gözlüğün kutuda ya da uykuda olması.
-    private static func hint(for error: Error) -> String {
+    nonisolated private static func hint(for error: Error) -> String {
         let text = String(describing: error).lowercased()
+        if text.contains("update") && (text.contains("glasses") || text.contains("datapp")) {
+            return " Meta AI'da gözlüğün yazılımını ve gözlükteki uygulamayı güncelle, sonra tekrar dene."
+        }
+        if text.contains("insufficientsdk") {
+            return " Junior'ın bu sürümü eski kaldı; yeni sürüm gerekiyor."
+        }
+        if error as? GlassesError == .permissionTimedOut || error as? GlassesError == .permissionDenied {
+            return ""
+        }
         if text.contains("nodevicewithconnection") || text.contains("no device with connection") {
             return " Gözlük eşleşmiş ama bağlı değil: kutudan çıkar, tak ve "
                 + "Meta AI'da şarj yüzdesinin göründüğünü doğrula."
@@ -271,6 +315,8 @@ final class GlassesService: ObservableObject {
     }
 
     func disconnect() async {
+        errorTask?.cancel()
+        errorTask = nil
         await camera?.stream.stop()
         camera = nil
         photoToken = nil
@@ -370,6 +416,8 @@ enum GlassesError: LocalizedError {
     case cameraUnavailable
     case timedOut
     case rejected
+    case permissionTimedOut
+    case permissionDenied
 
     var errorDescription: String? {
         switch self {
@@ -383,6 +431,10 @@ enum GlassesError: LocalizedError {
             return "Gözlükten kare gelmedi. Menzil dışında ya da pili bitmiş olabilir."
         case .rejected:
             return "Gözlük kare vermedi. Gözlüğü uyandırıp tekrar sor."
+        case .permissionTimedOut:
+            return "Meta AI'dan yanıt gelmedi. Meta AI açıldıysa izin ekranında \"İzin ver\"e bas ve Junior'a geri dön; açılmadıysa Meta AI'ı bir kez açıp kapat ve tekrar dene."
+        case .permissionDenied:
+            return "Kamera izni verilmedi. Tekrar dene ve Meta AI'da \"Her zaman izin ver\"i seç."
         }
     }
 }
@@ -403,6 +455,25 @@ private final class ResumeOnce: @unchecked Sendable {
         continuation = nil
         lock.unlock()
         pending?.resume()
+    }
+}
+
+/// ResumeOnce'ın sonuç döndüren hâli: süre sınırı ile asıl iş yarışırken
+/// devam noktası yalnız bir kez sürdürülür.
+private final class ResumeOnceThrowing<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Error>?
+
+    init(_ continuation: CheckedContinuation<T, Error>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ result: Result<T, Error>) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(with: result)
     }
 }
 
