@@ -44,6 +44,34 @@ final class ConfigURLTests: XCTestCase {
     }
 }
 
+final class PairingLinkTests: XCTestCase {
+    private let token = "abcdefghijklmnopqrstuvwxyz_0123456789-ABCDEF"
+
+    private func link(_ base: String, _ token: String) -> URL {
+        var components = URLComponents(string: "junior://pair")!
+        components.queryItems = [URLQueryItem(name: "u", value: base), URLQueryItem(name: "t", value: token)]
+        return components.url!
+    }
+
+    @MainActor
+    func testValidLinkIsParsed() {
+        let request = Config.parsePairing(link("https://junior.example.com/", token))
+        XCTAssertEqual(request?.baseURL, "https://junior.example.com")
+        XCTAssertEqual(request?.token, token)
+        XCTAssertEqual(request?.host, "junior.example.com")
+    }
+
+    @MainActor
+    func testRejectsPlainHttpPathsAndBadTokens() {
+        XCTAssertNil(Config.parsePairing(link("http://junior.example.com", token)))
+        XCTAssertNil(Config.parsePairing(link("https://junior.example.com/baska", token)))
+        XCTAssertNil(Config.parsePairing(link("https://junior.example.com", "kisa")))
+        XCTAssertNil(Config.parsePairing(link("https://junior.example.com", token + " ")))
+        XCTAssertNil(Config.parsePairing(URL(string: "junior://pair")!))
+        XCTAssertNil(Config.parsePairing(URL(string: "junior://register?u=x")!))
+    }
+}
+
 final class HistoryPairingTests: XCTestCase {
     private func message(_ role: ChatMessage.Role, _ text: String) -> ChatMessage {
         ChatMessage(role: role, text: text)

@@ -11,7 +11,24 @@ final class Config: ObservableObject {
         static let wakeWordEnabled = "junior.wakeWordEnabled"
         static let naturalVoice = "junior.naturalVoice"
         static let continuous = "junior.continuousConversation"
+        static let tokenAccessMigrated = "junior.tokenAccessAfterFirstUnlock"
     }
+
+    /// Bilgisayardaki Junior uygulamasinin QR kodundan gelen, henuz onaylanmamis
+    /// eslestirme. Kullanici onaylamadan uygulanmaz: aksi halde herhangi bir
+    /// junior://pair baglantisi sorulari baska bir sunucuya yonlendirebilirdi.
+    struct PairingRequest: Identifiable, Equatable {
+        let id = UUID()
+        let baseURL: String
+        let token: String
+        var host: String { URLComponents(string: baseURL)?.host ?? baseURL }
+    }
+
+    @Published var pendingPairing: PairingRequest?
+
+    /// Kilit ekranindayken Keychain okunamayabiliyor; acilista okunan belirtec
+    /// bellekte tutulur.
+    private var cachedToken: String?
 
     @Published var baseURL: String {
         didSet { UserDefaults.standard.set(baseURL, forKey: Keys.baseURL) }
@@ -41,23 +58,64 @@ final class Config: ObservableObject {
         // Varsayilan yok: adres kisiye ozel. Bos birakilinca uygulama
         // "sunucu adresi eksik" uyarisini gosterip Ayarlar'a goturuyor.
         baseURL = UserDefaults.standard.string(forKey: Keys.baseURL) ?? ""
-        hasToken = Keychain.read(account: Keys.keychainAccount) != nil
+        let stored = Keychain.read(account: Keys.keychainAccount)
+        cachedToken = stored
+        hasToken = stored != nil
+        // Eski kayit "yalniz kilit aciksa okunur" sinifindaydi: ekran kapaliyken
+        // "Hey Junior" denince belirtec okunamiyor, istek yetkisiz gidiyordu.
+        // Bir kez yeni sinifla yeniden yazilir.
+        if let stored, !UserDefaults.standard.bool(forKey: Keys.tokenAccessMigrated) {
+            if Keychain.write(account: Keys.keychainAccount, value: stored) {
+                UserDefaults.standard.set(true, forKey: Keys.tokenAccessMigrated)
+            }
+        }
         wakeWordEnabled = (UserDefaults.standard.object(forKey: Keys.wakeWordEnabled) as? Bool) ?? true
         naturalVoiceEnabled = (UserDefaults.standard.object(forKey: Keys.naturalVoice) as? Bool) ?? true
         continuousEnabled = (UserDefaults.standard.object(forKey: Keys.continuous) as? Bool) ?? true
     }
 
-    var token: String? { Keychain.read(account: Keys.keychainAccount) }
+    var token: String? {
+        if let cachedToken { return cachedToken }
+        let value = Keychain.read(account: Keys.keychainAccount)
+        cachedToken = value
+        return value
+    }
 
     func setToken(_ value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             Keychain.delete(account: Keys.keychainAccount)
+            cachedToken = nil
             hasToken = false
         } else {
             Keychain.write(account: Keys.keychainAccount, value: trimmed)
+            UserDefaults.standard.set(true, forKey: Keys.tokenAccessMigrated)
+            cachedToken = trimmed
             hasToken = true
         }
+    }
+
+    /// junior://pair?u=<https adresi>&t=<belirtec> baglantisini cozer.
+    /// Bicim bozuksa nil; gecerliyse onay icin bekletilir.
+    static func parsePairing(_ url: URL) -> PairingRequest? {
+        guard url.scheme == "junior", url.host == "pair",
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              let base = items.first(where: { $0.name == "u" })?.value,
+              let token = items.first(where: { $0.name == "t" })?.value,
+              let components = URLComponents(string: base), components.scheme == "https",
+              let host = components.host, !host.isEmpty,
+              (components.path.isEmpty || components.path == "/"),
+              components.query == nil,
+              token.count >= 32, token.count <= 256,
+              token.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) && $0.isASCII || $0 == "-" || $0 == "_" })
+        else { return nil }
+        return PairingRequest(baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base, token: token)
+    }
+
+    func applyPairing(_ request: PairingRequest) {
+        baseURL = request.baseURL
+        setToken(request.token)
+        pendingPairing = nil
     }
 
     /// Gecerli bir istek adresi uretir; bicimi bozuksa nil doner.
@@ -100,8 +158,10 @@ enum Keychain {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecValueData as String: Data(value.utf8),
-            // Cihaz kilidi acilmadan okunamaz ve yedege gitmez.
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            // Acilistan sonraki ilk kilit acmadan once okunamaz, yedege gitmez.
+            // "WhenUnlocked" olunca ekran kilitliyken okunamiyor ve sesli
+            // komutlar yetkisiz gidiyordu.
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
     }
