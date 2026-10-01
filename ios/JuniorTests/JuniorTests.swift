@@ -320,3 +320,42 @@ final class AudioRouteLabelTests: XCTestCase {
         XCTAssertEqual(description.label, "Ray-Ban Meta")
     }
 }
+
+final class LiveActivityTests: XCTestCase {
+    func testEveryPhaseHasTitleBadgeAndSymbol() {
+        for phase in JuniorActivityPhase.allCases {
+            XCTAssertFalse(phase.title.isEmpty)
+            XCTAssertFalse(phase.badge.isEmpty)
+            XCTAssertFalse(phase.symbol.isEmpty)
+        }
+        // Bilinmeyen ham değer (ör. eski sürümden kalan durum) çökmeden "bekliyor"a düşer.
+        XCTAssertEqual(JuniorActivityPhase(raw: "bilinmiyor"), .waiting)
+    }
+
+    @MainActor
+    func testHandsFreePhasesMapToActivityPhases() {
+        XCTAssertNil(HandsFreeSession.activityPhase(.off))
+        XCTAssertEqual(HandsFreeSession.activityPhase(.waiting), "waiting")
+        XCTAssertEqual(HandsFreeSession.activityPhase(.listening), "listening")
+        XCTAssertEqual(HandsFreeSession.activityPhase(.capturing), "looking")
+        XCTAssertEqual(HandsFreeSession.activityPhase(.thinking), "thinking")
+        XCTAssertEqual(HandsFreeSession.activityPhase(.speaking), "speaking")
+    }
+
+    func testContentStateRoundTrips() throws {
+        let state = JuniorActivityAttributes.ContentState(phase: "speaking", detail: "Yarın hava güneşli.", glasses: true, updatedAt: Date(timeIntervalSince1970: 1_000))
+        let data = try JSONEncoder().encode(state)
+        XCTAssertEqual(try JSONDecoder().decode(JuniorActivityAttributes.ContentState.self, from: data), state)
+    }
+
+    func testDotCatHasEyesEarsAndClosedEyes() {
+        // Göz bebeği parlak, göz çevresi boş, kulak ucu dolu, dışarısı boş.
+        XCTAssertGreaterThan(JuniorDots.weight(x: -0.3, y: 0.04, eyesClosed: false), 1)
+        XCTAssertEqual(JuniorDots.weight(x: -0.42, y: 0.04, eyesClosed: false), 0)
+        XCTAssertGreaterThan(JuniorDots.weight(x: -0.6, y: -0.8, eyesClosed: false), 0)
+        XCTAssertEqual(JuniorDots.weight(x: 0.95, y: 0.95, eyesClosed: false), 0)
+        // Kapalı gözde göz bebeği yerine çizgi.
+        XCTAssertGreaterThan(JuniorDots.weight(x: -0.42, y: 0.04, eyesClosed: true), 0)
+        XCTAssertEqual(JuniorDots.weight(x: -0.3, y: 0.12, eyesClosed: true), 0)
+    }
+}

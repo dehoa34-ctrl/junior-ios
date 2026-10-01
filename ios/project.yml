@@ -7,8 +7,8 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "1.2.1"
+    CURRENT_PROJECT_VERSION: "3"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
@@ -29,9 +29,13 @@ targets:
         product: MWDATCore
       - package: MetaWearablesDAT
         product: MWDATCamera
+      # Dynamic Island / kilit ekranı (Live Activity) eklentisi uygulamaya gömülür.
+      - target: JuniorWidgets
     sources:
       - path: Junior/Sources
       - path: Junior/Resources
+      # Live Activity modeli ve noktalı kedi: uygulama ve widget eklentisi paylaşır.
+      - path: Shared
     info:
       path: Junior/Info.plist
       properties:
@@ -39,6 +43,8 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
+        # Dynamic Island / kilit ekranında Live Activity.
+        NSSupportsLiveActivities: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         # Izin metinleri kullaniciya aynen gosterilir; Turkce ve acik olmali.
@@ -83,6 +89,26 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: xyz.jrbilge.junior
         TARGETED_DEVICE_FAMILY: "1"
+
+  JuniorWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: JuniorWidgets
+      - path: Shared
+    info:
+      path: JuniorWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Junior
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: xyz.jrbilge.junior.widgets
+        TARGETED_DEVICE_FAMILY: "1"
+        APPLICATION_EXTENSION_API_ONLY: YES
 
   JuniorTests:
     type: bundle.unit-test

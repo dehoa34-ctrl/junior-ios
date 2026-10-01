@@ -85,6 +85,16 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle("Dynamic Island'da göster", isOn: $config.liveActivityEnabled)
+                } header: {
+                    Text("Dinamik ada")
+                } footer: {
+                    Text("Junior dinlerken, gözlükten bakarken, düşünürken ve konuşurken Dynamic Island'da "
+                         + "(Dynamic Island olmayan iPhone'larda kilit ekranında) noktalı kedi ve son yanıt görünür. "
+                         + "iOS kuralı gereği etkinlik uygulama öndeyken başlar; sonra arka planda güncellenir.")
+                }
+
+                Section {
                     LabeledContent("Kayıt", value: glasses.registrationInfo)
                     LabeledContent("Kamera izni", value: glasses.permissionInfo)
                     LabeledContent("Görünen cihaz", value: glasses.deviceInfo)

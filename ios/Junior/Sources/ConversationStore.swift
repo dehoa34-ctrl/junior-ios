@@ -4,7 +4,13 @@ import UIKit
 @MainActor
 final class ConversationStore: ObservableObject {
     @Published private(set) var messages: [ChatMessage] = []
-    @Published private(set) var isSending = false
+    @Published private(set) var isSending = false {
+        // Eller serbest kapalıyken de istek sürdükçe Dynamic Island'da görünsün.
+        didSet {
+            guard isSending != oldValue else { return }
+            JuniorLiveActivity.shared.request(sending: isSending, detail: messages.last?.text ?? "")
+        }
+    }
     @Published var errorText: String?
     /// Sunucu "bilgisayarda mi telefonda mi" diye sordugunda son mesaji saklariz.
     @Published private(set) var pendingTargetQuestion: String?

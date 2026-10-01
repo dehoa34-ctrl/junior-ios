@@ -30,6 +30,14 @@ final class Config: ObservableObject {
     /// bellekte tutulur.
     private var cachedToken: String?
 
+    /// Dynamic Island / kilit ekranında Live Activity gösterilsin mi.
+    @Published var liveActivityEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(liveActivityEnabled, forKey: JuniorLiveActivity.enabledKey)
+            if !liveActivityEnabled { JuniorLiveActivity.shared.endNow() }
+        }
+    }
+
     @Published var baseURL: String {
         didSet { UserDefaults.standard.set(baseURL, forKey: Keys.baseURL) }
     }
@@ -72,6 +80,7 @@ final class Config: ObservableObject {
         wakeWordEnabled = (UserDefaults.standard.object(forKey: Keys.wakeWordEnabled) as? Bool) ?? true
         naturalVoiceEnabled = (UserDefaults.standard.object(forKey: Keys.naturalVoice) as? Bool) ?? true
         continuousEnabled = (UserDefaults.standard.object(forKey: Keys.continuous) as? Bool) ?? true
+        liveActivityEnabled = (UserDefaults.standard.object(forKey: JuniorLiveActivity.enabledKey) as? Bool) ?? true
     }
 
     var token: String? {

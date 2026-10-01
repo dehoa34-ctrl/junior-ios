@@ -271,7 +271,24 @@ final class HandsFreeSession: ObservableObject {
     /// gercek cihazdaki davranisini deneyemedim ve seslendirme geri cagrisi
     /// hic gelmeyebilir. Bekci olmazsa boyle bir durumda asistan sessizce
     /// oluyor ve kullanicinin uyandirma sozcugunu kapatip acmasi gerekiyor.
+    /// Live Activity (Dynamic Island) adımı; `nil` döngünün kapandığı anlamına gelir.
+    static func activityPhase(_ p: Phase) -> String? {
+        switch p {
+        case .off: return nil
+        case .waiting: return JuniorActivityPhase.waiting.rawValue
+        case .listening: return JuniorActivityPhase.listening.rawValue
+        case .capturing: return JuniorActivityPhase.looking.rawValue
+        case .thinking: return JuniorActivityPhase.thinking.rawValue
+        case .speaking: return JuniorActivityPhase.speaking.rawValue
+        }
+    }
+
     private func phaseChanged() {
+        JuniorLiveActivity.shared.handsFree(
+            phase: Self.activityPhase(phase),
+            detail: store.messages.last?.text ?? "",
+            glasses: usedGlasses
+        )
         switch phase {
         case .off, .waiting:
             watchdog?.cancel()
