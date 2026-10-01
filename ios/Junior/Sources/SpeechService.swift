@@ -40,6 +40,8 @@ final class SpeechService: NSObject, ObservableObject {
     private var player: AVAudioPlayer?
     private var cuePlayer: AVAudioPlayer?
     private var remoteSpeakTask: Task<Void, Never>?
+    /// Calan dogal ses parcasinin bitmesini bekleyen dongu.
+    private var playbackContinuation: CheckedContinuation<Bool, Never>?
 
     override init() {
         super.init()
@@ -173,7 +175,14 @@ final class SpeechService: NSObject, ObservableObject {
         state = .idle
     }
 
-    func speak(_ text: String) {
+    /// Yaniti seslendirir. Sunucudaki dogal ses parca parca istenir: ilk (kisa)
+    /// parca gelir gelmez calar, sonraki parca o calarken hazirlanir. Butun
+    /// yanitin seslendirilmesini beklemek uzun yanitlarda 10-15 saniye
+    /// sessizlik demekti.
+    ///
+    /// `chunks` sunucunun bolup onden seslendirmeye basladigi parcalardir;
+    /// yoksa metin burada ayni kurala gore bolunur.
+    func speak(_ text: String, chunks: [String] = []) {
         guard !text.isEmpty else {
             // Yanit bos gelirse de dongu ilerlemeli, yoksa sonsuza kadar bekler.
             onSpeakingFinished?()
@@ -181,29 +190,114 @@ final class SpeechService: NSObject, ObservableObject {
         }
         stopSpeaking()
         state = .speaking
-        guard let remoteTTS else {
+        let parts = chunks.isEmpty ? Self.speechChunks(text) : chunks
+        guard let remoteTTS, !parts.isEmpty else {
             speakLocally(text)
             return
         }
-        // Sunucudaki noral ses cok daha dogal; getirilemezse yerlesik ses
-        // devreye girer. Dongu state'e bakar, iki yol da ayni bitisi bildirir.
         remoteSpeakTask = Task { [weak self] in
-            var audio: Data?
-            do { audio = try await remoteTTS(text) } catch { audio = nil }
-            guard let self, self.state == .speaking, !Task.isCancelled else { return }
-            if let audio, self.playRemote(audio) { return }
-            self.speakLocally(text)
+            var fetches: [Int: Task<Data?, Never>] = [:]
+            func request(_ index: Int) {
+                guard index < parts.count, fetches[index] == nil else { return }
+                fetches[index] = Task { try? await remoteTTS(parts[index]) }
+            }
+            defer { fetches.values.forEach { $0.cancel() } }
+            for index in parts.indices {
+                // Yalniz bir sonraki parca onden istenir; fazlasi ilk parcayla yarisiyor.
+                request(index)
+                request(index + 1)
+                let audio = await fetches[index]?.value ?? nil
+                guard let self, !Task.isCancelled, self.state == .speaking else { return }
+                guard let audio, await self.playRemoteAndWait(audio) else {
+                    // Durdurulduysa hicbir sey okunmaz.
+                    guard !Task.isCancelled, self.state == .speaking else { return }
+                    // Dogal ses gelmedi: kalan kisim yerlesik sesle okunur. Ses iki
+                    // kez degismesin diye bundan sonrasi tamamen yerel kalir.
+                    self.speakLocally(parts[index...].joined(separator: " "))
+                    return
+                }
+                guard !Task.isCancelled, self.state == .speaking else { return }
+            }
+            self?.finishSpeaking()
         }
     }
 
-    /// MP3'u calar; kurulamazsa false doner ve yerlesik ses kullanilir.
-    private func playRemote(_ data: Data) -> Bool {
+    /// Bir parcayi calar ve bitince doner. Kurulamazsa false doner.
+    private func playRemoteAndWait(_ data: Data) async -> Bool {
         configurePlayback()
         guard let player = try? AVAudioPlayer(data: data) else { return false }
         player.delegate = self
         self.player = player
-        guard player.play() else { self.player = nil; return false }
-        return true
+        return await withCheckedContinuation { continuation in
+            playbackContinuation = continuation
+            if !player.play() {
+                playbackContinuation = nil
+                self.player = nil
+                continuation.resume(returning: false)
+            }
+        }
+    }
+
+    /// Calan parca bitti (ya da durduruldu): bekleyen donguyu ilerletir.
+    private func resumePlayback(_ played: Bool) {
+        guard let continuation = playbackContinuation else { return }
+        playbackContinuation = nil
+        player = nil
+        continuation.resume(returning: played)
+    }
+
+    /// Yaniti seslendirme parcalarina boler. Sunucudaki speech_chunks ve
+    /// masaustundeki splitForSpeech ile ayni kural: ilk parca kisa (80), digerleri
+    /// motorun tek seferde okuyabildigi sinirda (170).
+    nonisolated static func speechChunks(_ text: String, first: Int = 80, rest: Int = 170) -> [String] {
+        var cleaned = text.replacingOccurrences(of: "```[\\s\\S]*?```", with: " (kod bloğu) ", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "https?://\\S+", with: "bağlantı", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "[*_#>|~`]+", with: " ", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        var out: [String] = []
+        func limit() -> Int { out.isEmpty ? first : rest }
+        func cutLong(_ sentence: String) -> String {
+            var s = sentence
+            while s.count > limit() {
+                let maximum = limit()
+                let head = String(s.prefix(maximum))
+                var cut = head.range(of: ", ", options: .backwards).map { head.distance(from: head.startIndex, to: $0.lowerBound) + 1 }
+                if (cut ?? 0) < maximum / 2 {
+                    cut = head.range(of: " ", options: .backwards).map { head.distance(from: head.startIndex, to: $0.lowerBound) }
+                }
+                let at = max(1, (cut ?? 0) < maximum / 2 ? maximum : cut!)
+                let piece = String(s.prefix(at)).trimmingCharacters(in: .whitespaces)
+                if !piece.isEmpty { out.append(piece) }
+                s = String(s.dropFirst(at)).trimmingCharacters(in: .whitespaces)
+            }
+            return s
+        }
+        var current = ""
+        var sentences: [String] = []
+        var buffer = ""
+        for character in cleaned {
+            buffer.append(character)
+            if ".!?…".contains(character) {
+                sentences.append(buffer)
+                buffer = ""
+            }
+        }
+        if !buffer.isEmpty { sentences.append(buffer) }
+        for raw in sentences {
+            let sentence = raw.trimmingCharacters(in: .whitespaces)
+            guard !sentence.isEmpty else { continue }
+            if current.isEmpty {
+                current = cutLong(sentence)
+            } else if current.count + 1 + sentence.count <= limit() {
+                current += " " + sentence
+            } else {
+                out.append(current)
+                current = cutLong(sentence)
+            }
+        }
+        if !current.isEmpty { out.append(current) }
+        return out
     }
 
     private func speakLocally(_ text: String) {
@@ -277,6 +371,8 @@ final class SpeechService: NSObject, ObservableObject {
         remoteSpeakTask?.cancel()
         remoteSpeakTask = nil
         if let player { player.stop(); self.player = nil }
+        // stop() bitis bildirimi gondermiyor; bekleyen parca dongusu serbest kalsin.
+        resumePlayback(false)
         if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
         if state == .speaking { state = .idle }
     }
@@ -294,12 +390,13 @@ extension SpeechService: AVSpeechSynthesizerDelegate {
 
 extension SpeechService: AVAudioPlayerDelegate {
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        Task { @MainActor in self.finishSpeaking() }
+        // Parca bitti; dongu bir sonrakine gecer (son parcadan sonra konusma biter).
+        Task { @MainActor in self.resumePlayback(true) }
     }
 
     nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
-        // Bozuk ses verisi; dongu kilitlenmesin, konusma bitmis sayilir.
-        Task { @MainActor in self.finishSpeaking() }
+        // Bozuk ses verisi: dongu kalan kismi yerlesik sesle okur, kilitlenmez.
+        Task { @MainActor in self.resumePlayback(false) }
     }
 }
 

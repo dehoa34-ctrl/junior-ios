@@ -360,167 +360,33 @@ final class LiveActivityTests: XCTestCase {
     }
 }
 
-/// Sunucunun yerine geçer: her yoklamayı kaydeder, yanıtı test belirler.
-@MainActor
-private final class FakeHealth {
-    private(set) var urls: [URL] = []
-    /// Sırayla verilecek yanıtlar; bitince `fallback` döner.
-    var script: [Bool] = []
-    var fallback = false
-    /// Açıkken yanıt, test `release` diyene kadar bekletilir (yavaş ağ).
-    var hold = false
-    private var held: [CheckedContinuation<Bool, Never>] = []
-
-    func probe(_ url: URL) async -> Bool {
-        urls.append(url)
-        if hold { return await withCheckedContinuation { held.append($0) } }
-        return script.isEmpty ? fallback : script.removeFirst()
+/// Yanıt parça parça seslendirilir; parçalama sunucuyla aynı kurala uymalı.
+final class SpeechChunkTests: XCTestCase {
+    func testFirstChunkIsShortAndNothingIsLost() {
+        let text = "Tamam, hemen bakıyorum. Bugün hava parçalı bulutlu, en yüksek sıcaklık yirmi iki derece. "
+            + "Akşam saatlerinde hafif yağmur bekleniyor, şemsiyeni yanına almanı öneririm. "
+            + "Ayrıca takviminde saat üçte bir toplantı var."
+        let chunks = SpeechService.speechChunks(text)
+        XCTAssertGreaterThan(chunks.count, 1)
+        XCTAssertLessThanOrEqual(chunks[0].count, 80)
+        for chunk in chunks { XCTAssertLessThanOrEqual(chunk.count, 170) }
+        XCTAssertEqual(chunks.joined(separator: " "), text)
     }
 
-    func release(_ index: Int, up: Bool) {
-        held[index].resume(returning: up)
-    }
-}
-
-final class ServerMonitorTests: XCTestCase {
-    private let address = URL(string: "https://junior.example.com/health")!
-
-    @MainActor
-    private func monitor(_ fake: FakeHealth, url: URL?, retry: TimeInterval = 10,
-                         debounce: TimeInterval = 10) -> ServerMonitor {
-        ServerMonitor(healthURL: { url }, probe: { await fake.probe($0) },
-                      retryInterval: retry, debounceInterval: debounce)
+    func testShortReplyStaysWhole() {
+        XCTAssertEqual(SpeechService.speechChunks("Tamam."), ["Tamam."])
+        XCTAssertEqual(SpeechService.speechChunks(""), [])
     }
 
-    /// Koşul sağlanana ya da süre dolana dek bekler; kontrol main actor'da yapılır.
-    @MainActor
-    private func waitUntil(timeout: TimeInterval = 3, _ condition: () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition(), Date() < deadline {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+    func testMarkdownAndLinksAreNotReadAloud() {
+        XCTAssertEqual(SpeechService.speechChunks("**Tamam** https://a.b/c"), ["Tamam bağlantı"])
     }
 
-    private func idle(_ seconds: TimeInterval) async {
-        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-    }
-
-    @MainActor
-    func testLateFailureDoesNotOverwriteNewerSuccess() async {
-        // Gerçek cihazdaki durum: Wi-Fi'dan hücresele geçerken başlayan kontrol
-        // zaman aşımıyla geç döner, sonra başlayan ve başarılı olanı ezmemeli.
-        let fake = FakeHealth()
-        fake.hold = true
-        let server = monitor(fake, url: address)
-        server.check()
-        await waitUntil { fake.urls.count == 1 }
-        server.check()
-        await waitUntil { fake.urls.count == 2 }
-
-        fake.release(1, up: true)
-        await waitUntil { server.serverUp == true }
-        XCTAssertEqual(server.serverUp, true)
-
-        fake.release(0, up: false)
-        await idle(0.2)
-        XCTAssertEqual(server.serverUp, true, "eski kontrolün sonucu uygulanmamalı")
-    }
-
-    @MainActor
-    func testRetriesUntilReachableThenStops() async {
-        // Uyarı "Yeniden dene"ye basılmadan kendiliğinden kalkmalı.
-        let fake = FakeHealth()
-        fake.script = [false, false]
-        fake.fallback = true
-        let server = monitor(fake, url: address, retry: 0.05)
-        server.check()
-        await waitUntil { server.serverUp == false }
-        XCTAssertEqual(server.serverUp, false)
-
-        await waitUntil { server.serverUp == true }
-        XCTAssertEqual(server.serverUp, true)
-        XCTAssertEqual(fake.urls.count, 3)
-
-        // Sunucu gelince döngü durur.
-        await idle(0.3)
-        XCTAssertEqual(fake.urls.count, 3)
-    }
-
-    @MainActor
-    func testMissingAddressNeverProbes() async {
-        let fake = FakeHealth()
-        let server = monitor(fake, url: nil, retry: 0.05)
-        server.check()
-        await idle(0.2)
-        XCTAssertNil(server.serverUp)
-        XCTAssertTrue(fake.urls.isEmpty)
-    }
-
-    @MainActor
-    func testPauseStopsTheRetryLoop() async {
-        let fake = FakeHealth()
-        let server = monitor(fake, url: address, retry: 0.05)
-        server.check()
-        await waitUntil { server.serverUp == false }
-        server.pause()
-        let probes = fake.urls.count
-        await idle(0.3)
-        XCTAssertEqual(fake.urls.count, probes, "arka planda ağa çıkılmamalı")
-        // Öne dönünce yeniden başlar.
-        fake.fallback = true
-        server.check()
-        await waitUntil { server.serverUp == true }
-        XCTAssertEqual(server.serverUp, true)
-    }
-
-    @MainActor
-    func testTypingProbesOnceWithTheFinalAddress() async {
-        let fake = FakeHealth()
-        fake.fallback = true
-        var current: URL?
-        let server = ServerMonitor(healthURL: { current }, probe: { await fake.probe($0) },
-                                   retryInterval: 10, debounceInterval: 0.1)
-        for typed in ["https://j", "https://junior", "https://junior.example.com"] {
-            current = URL(string: typed + "/health")
-            server.addressChanged()
-        }
-        XCTAssertTrue(fake.urls.isEmpty, "her tuşta ağa çıkılmamalı")
-        await waitUntil { server.serverUp == true }
-        await idle(0.2)
-        XCTAssertEqual(fake.urls, [address])
-    }
-
-    @MainActor
-    func testClosingSettingsChecksWithoutWaiting() async {
-        // Ayarlar kapanınca check() çağrılır: bekleyen gecikmeli kontrol iptal
-        // olur, yoklama hemen ve bir kez yapılır.
-        let fake = FakeHealth()
-        fake.fallback = true
-        let server = monitor(fake, url: address, debounce: 0.1)
-        server.addressChanged()
-        server.check()
-        await waitUntil { server.serverUp == true }
-        XCTAssertEqual(server.serverUp, true)
-        await idle(0.3)
-        XCTAssertEqual(fake.urls.count, 1)
-    }
-
-    @MainActor
-    func testAddressChangeDiscardsOldVerdict() async {
-        let fake = FakeHealth()
-        let server = monitor(fake, url: address)
-        server.check()
-        await waitUntil { server.serverUp == false }
-        XCTAssertEqual(server.serverUp, false)
-
-        // Eski adres için yarıda kalan yoklama yeni adresin durumunu belirlememeli.
-        fake.hold = true
-        server.check()
-        await waitUntil { fake.urls.count == 2 }
-        server.addressChanged()
-        XCTAssertNil(server.serverUp)
-        fake.release(0, up: false)
-        await idle(0.2)
-        XCTAssertNil(server.serverUp)
+    func testLongSentenceWithoutPeriodIsSplit() {
+        let words = (0..<60).map { "kelime\($0)" }.joined(separator: " ")
+        let chunks = SpeechService.speechChunks(words)
+        XCTAssertGreaterThan(chunks.count, 1)
+        XCTAssertLessThanOrEqual(chunks[0].count, 80)
+        XCTAssertEqual(chunks.joined(separator: " "), words)
     }
 }

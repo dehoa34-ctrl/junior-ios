@@ -101,7 +101,7 @@ final class ConversationStore: ObservableObject {
                 // dinlemesi duraklatilmali, yoksa Junior kendi sesindeki
                 // "Junior" kelimesini duyar.
                 onTurnEnded?(nil)
-                speech.speak(response.reply)
+                speech.speak(response.reply, chunks: response.speech)
             } catch {
                 let description = (error as? JuniorError)?.localizedDescription ?? error.localizedDescription
                 errorText = description

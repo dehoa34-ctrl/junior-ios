@@ -52,6 +52,8 @@ struct CommandResponse {
     let reply: String
     let status: CommandStatus
     let errorCode: String?
+    /// Sunucunun bölüp önden seslendirmeye başladığı parçalar; boşsa uygulama kendisi böler.
+    var speech: [String] = []
 }
 
 enum JuniorError: LocalizedError {
@@ -117,6 +119,9 @@ actor JuniorClient {
         request.httpMethod = "POST"
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Sunucu yanitla birlikte seslendirme parcalarini da gondersin ve ilk
+        // parcalarin sesini hemen uretmeye baslasin: ses birkac saniye erken gelir.
+        request.setValue("chunks", forHTTPHeaderField: "X-Junior-Speech")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await perform(request)
@@ -124,9 +129,11 @@ actor JuniorClient {
         let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let reply = parsed["reply"] as? String ?? ""
         let error = parsed["error"] as? [String: Any]
+        let speech = (parsed["speech"] as? [Any])?.compactMap { $0 as? String }.filter { !$0.isEmpty } ?? []
         return CommandResponse(reply: reply.isEmpty ? "Junior bos yanit dondurdu." : reply,
                                status: CommandStatus(raw: parsed["status"] as? String),
-                               errorCode: error?["code"] as? String)
+                               errorCode: error?["code"] as? String,
+                               speech: reply.isEmpty ? [] : speech)
     }
 
     /// Sunucu ayakta mi. Token istemez ve hizli doner; konusmadan **once**
