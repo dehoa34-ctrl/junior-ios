@@ -15,8 +15,8 @@ struct RootView: View {
     @State private var showCamera = false
     @State private var showLibrary = false
     @State private var photoItem: PhotosPickerItem?
-    /// nil = henuz bakilmadi. false ise bilgisayar kapali ya da tunel dusuk.
-    @State private var serverUp: Bool?
+    /// Bilgisayara ulasilabiliyor mu; ulasilamiyorsa kendisi yeniden dener.
+    @StateObject private var server: ServerMonitor
     @Environment(\.scenePhase) private var scenePhase
 
     init(config: Config, speech: SpeechService) {
@@ -32,13 +32,15 @@ struct RootView: View {
         _store = StateObject(wrappedValue: store)
         _handsFree = StateObject(wrappedValue: HandsFreeSession(
             wakeWord: wakeWord, speech: speech, glasses: glasses, store: store))
+        _server = StateObject(wrappedValue: ServerMonitor(
+            healthURL: { [weak config] in config?.url(path: "/health") }))
     }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 transcript
-                if serverUp == false { offlineBanner }
+                if server.serverUp == false { offlineBanner }
                 if store.pendingTargetQuestion != nil { targetChooser }
                 if let error = store.errorText { banner(error) }
                 composer
@@ -59,15 +61,28 @@ struct RootView: View {
                 handsFree.continuousEnabled = config.continuousEnabled
                 syncWakeWord()
                 wireNaturalVoice()
-                checkServer()
+                server.check()
             }
             // One donunce yeniden bak: bilgisayar bu arada kapanmis olabilir.
-            .onChange(of: scenePhase) { if scenePhase == .active { checkServer() } }
+            // Arka planda yeniden deneme dongusu durur; cepteyken aga cikmasin.
+            .onChange(of: scenePhase) {
+                if scenePhase == .active { server.check() } else if scenePhase == .background { server.pause() }
+            }
             .onChange(of: config.continuousEnabled) {
                 handsFree.continuousEnabled = config.continuousEnabled
             }
             .onChange(of: config.wakeWordEnabled) { syncWakeWord() }
-            .onChange(of: showSettings) { if !showSettings { syncWakeWord() } }
+            // Ayarlar kapaninca yeni adresle hemen bakilir; yoksa uyari eski
+            // (bos) adresin sonucunu gosterip "Yeniden dene"yi bekliyordu.
+            .onChange(of: showSettings) {
+                if !showSettings {
+                    syncWakeWord()
+                    server.check()
+                }
+            }
+            // Adres Ayarlar'da yazilirken ya da QR eslestirmesiyle degisir; her
+            // tusta degil, yazma durunca bakilir.
+            .onChange(of: config.baseURL) { server.addressChanged() }
             .photosPicker(isPresented: $showLibrary, selection: $photoItem, matching: .images)
             .onChange(of: photoItem) {
                 guard let photoItem else { return }
@@ -147,16 +162,11 @@ struct RootView: View {
             Text("Bilgisayara ulaşılamıyor. Junior yanıt veremez; bilgisayar ve tünel açık mı?")
                 .font(.footnote)
             Spacer()
-            Button("Yeniden dene") { checkServer() }.font(.footnote.weight(.semibold))
+            Button("Yeniden dene") { server.check() }.font(.footnote.weight(.semibold))
         }
         .padding(10)
         .background(Color.orange.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
         .padding(.horizontal)
-    }
-
-    private func checkServer() {
-        guard let url = config.url(path: "/health") else { serverUp = nil; return }
-        Task { serverUp = await JuniorClient().isReachable(url: url) }
     }
 
     private func banner(_ text: String) -> some View {
