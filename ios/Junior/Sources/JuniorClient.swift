@@ -163,6 +163,24 @@ actor JuniorClient {
         return data
     }
 
+    /// QR eslestirmesinden hemen sonra: belirtec ve tunel calisiyor mu, bilgisayara
+    /// "eslestim" de (masaustundeki QR penceresi bunu gorunce "baglandi" der).
+    /// Bu ucu bilmeyen eski sunucuda yetenek ucuyla yalniz baglanti denenir.
+    func confirmPairing(url: URL, token: String, fallback: URL?) async throws -> [String] {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        let (data, response) = try await perform(request)
+        if (response as? HTTPURLResponse)?.statusCode == 404, let fallback {
+            _ = try await capabilities(url: fallback, token: token)
+            return []
+        }
+        try check(response: response, data: data)
+        let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        return (parsed?["providers"] as? [Any])?.compactMap { $0 as? String } ?? []
+    }
+
     /// Bilgisayardaki Junior'in telefona biraktigi isler; alinanlar sunucudan duser.
     func phoneTasks(url: URL, token: String) async throws -> [PhoneTask] {
         var request = URLRequest(url: url)
