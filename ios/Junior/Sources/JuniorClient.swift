@@ -163,6 +163,16 @@ actor JuniorClient {
         return data
     }
 
+    /// Bilgisayardaki Junior'in telefona biraktigi isler; alinanlar sunucudan duser.
+    func phoneTasks(url: URL, token: String) async throws -> [PhoneTask] {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        let (data, response) = try await perform(request)
+        try check(response: response, data: data)
+        return PhoneTask.parse(data)
+    }
+
     /// Sunucu yalniz tamamlanmis user/assistant ciftlerini kabul eder.
     /// Testten erisilebilir olmali: es sirasi hatasi sunucuda 400 olarak doner.
     static func completedPairs(from history: [ChatMessage]) -> [[String: String]] {

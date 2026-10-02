@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 @main
 struct JuniorApp: App {
@@ -10,6 +11,8 @@ struct JuniorApp: App {
         // Gozluk koprusu acilista bir kez yapilandirilir; basarisiz olursa
         // uygulamanin geri kalani etkilenmez.
         GlassesService.configureOnLaunch()
+        // Bilgisayardan gelen notlar uygulama acikken de bildirim olarak gorunsun.
+        UNUserNotificationCenter.current().delegate = NotificationPresenter.shared
     }
 
     var body: some Scene {
