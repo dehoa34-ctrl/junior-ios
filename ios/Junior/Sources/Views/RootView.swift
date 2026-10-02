@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UniformTypeIdentifiers
 import UIKit
 
 struct RootView: View {
@@ -15,6 +16,8 @@ struct RootView: View {
     @State private var showCamera = false
     @State private var showLibrary = false
     @State private var photoItem: PhotosPickerItem?
+    /// Secilen video Fotograflar'dan kopyalanirken (iCloud'dan inebilir)
+    @State private var preparingVideo = false
     /// Bilgisayara ulasilabiliyor mu; ulasilamiyorsa kendisi yeniden dener.
     @StateObject private var server: ServerMonitor
     /// Bilgisayardan telefona gonderilen notlar, baglantilar, hatirlaticilar
@@ -66,6 +69,7 @@ struct RootView: View {
                 wireNaturalVoice()
                 server.check()
                 phoneTasks.start()
+                store.resumeVideoJob()
             }
             // One donunce yeniden bak: bilgisayar bu arada kapanmis olabilir.
             // Arka planda yeniden deneme dongusu durur; cepteyken aga cikmasin.
@@ -73,6 +77,7 @@ struct RootView: View {
                 if scenePhase == .active {
                     server.check()
                     phoneTasks.start()
+                    store.resumeVideoJob()
                 } else if scenePhase == .background {
                     server.pause()
                     phoneTasks.pause()
@@ -93,11 +98,17 @@ struct RootView: View {
             // Adres Ayarlar'da yazilirken ya da QR eslestirmesiyle degisir; her
             // tusta degil, yazma durunca bakilir.
             .onChange(of: config.baseURL) { server.addressChanged() }
-            .photosPicker(isPresented: $showLibrary, selection: $photoItem, matching: .images)
+            .photosPicker(isPresented: $showLibrary, selection: $photoItem, matching: .any(of: [.images, .videos]))
             .onChange(of: photoItem) {
                 guard let photoItem else { return }
                 Task {
                     defer { self.photoItem = nil }
+                    // Video: bilgisayarda kurgulanmak uzere eklenir; ne yapilacagini
+                    // kullanici yazar ya da soyler ("bunu editle").
+                    if photoItem.supportedContentTypes.contains(where: { $0.conforms(to: .movie) }) {
+                        await attachVideo(photoItem)
+                        return
+                    }
                     guard let data = try? await photoItem.loadTransferable(type: Data.self),
                           let image = UIImage(data: data) else {
                         store.errorText = "Fotoğraf okunamadı. Başka bir kare dene."
@@ -146,7 +157,8 @@ struct RootView: View {
             Text("Ornekler:").font(.subheadline).foregroundStyle(.secondary)
             ForEach(["Bilgisayarda Tarkan Şımarık çal",
                      "Bilgisayarda videoyu duraklat",
-                     "Bu fotoğrafta ne var? (kamera düğmesi)"], id: \.self) { example in
+                     "Bu fotoğrafta ne var? (kamera düğmesi)",
+                     "Galeriden video seç, \"bunu Reels'e uygun editle\" de (bilgisayarda kurgulanır)"], id: \.self) { example in
                 Text("- " + example).font(.callout).foregroundStyle(.secondary)
             }
         }
@@ -228,6 +240,8 @@ struct RootView: View {
                 .padding(.horizontal)
                 .padding(.top, 4)
             }
+            VideoJobRow(service: store.videoJobs)
+            if preparingVideo || store.pendingVideo != nil { videoChip }
             if let status = handsFreeStatus {
                 Text(status)
                     .font(.caption)
@@ -258,7 +272,7 @@ struct RootView: View {
                     // Gozluk fotograflari Meta AI uygulamasindan Fotograflar'a
                     // kaydediliyor; oradan sorabilmek icin galeri sart.
                     Button { showLibrary = true } label: {
-                        Label("Galeriden seç", systemImage: "photo.on.rectangle")
+                        Label("Galeriden fotoğraf ya da video", systemImage: "photo.on.rectangle")
                     }
                     // Gozluk kamerasi: kare istek aninda alinir, onbellekten degil.
                     Button { captureFromGlasses() } label: {
@@ -274,7 +288,7 @@ struct RootView: View {
                     .lineLimit(1...4)
                     .onSubmit(sendDraft)
 
-                if draft.isEmpty {
+                if draft.isEmpty && store.pendingVideo == nil {
                     Button(action: toggleMic) {
                         Image(systemName: speech.state == .listening ? "stop.circle.fill" : "mic.circle.fill")
                             .font(.largeTitle)
@@ -339,9 +353,59 @@ struct RootView: View {
         }
     }
 
+    /// Secilen video: yazi alaninin ustunde durur, gonderilecek mesaja eklenir.
+    private var videoChip: some View {
+        HStack(spacing: 8) {
+            if let video = store.pendingVideo {
+                Image(systemName: "film")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(video.name) · \(video.sizeLabel)").font(.caption.weight(.semibold)).lineLimit(1)
+                    Text("Ne yapılacağını yaz ya da söyle (ör. \"bunu Reels'e uygun editle\"); bilgisayarda kurgulanır.")
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Spacer()
+                Button {
+                    try? FileManager.default.removeItem(at: video.url)
+                    store.pendingVideo = nil
+                } label: { Image(systemName: "xmark.circle.fill") }
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView().controlSize(.small)
+                Text("Video hazırlanıyor...").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            }
+        }
+        .padding(8)
+        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal)
+    }
+
+    private func attachVideo(_ item: PhotosPickerItem) async {
+        preparingVideo = true
+        defer { preparingVideo = false }
+        guard let movie = try? await item.loadTransferable(type: PickedMovie.self) else {
+            store.errorText = "Video okunamadı. iCloud'daysa önce Fotoğraflar'da açıp indir, sonra tekrar seç."
+            return
+        }
+        let size = (try? FileManager.default.attributesOfItem(atPath: movie.url.path)[.size] as? NSNumber)?.int64Value ?? 0
+        guard size > 0 else {
+            store.errorText = "Video boş görünüyor."
+            return
+        }
+        if let old = store.pendingVideo { try? FileManager.default.removeItem(at: old.url) }
+        // Gecici adin basindaki benzersiz kisim gosterilmez.
+        let shown = movie.url.lastPathComponent.split(separator: "-", maxSplits: 1).last.map(String.init) ?? "video"
+        store.pendingVideo = PickedVideo(url: movie.url, name: shown, size: size)
+    }
+
     private func sendDraft() {
         let text = draft
         draft = ""
+        // Video ekliyse mesaj kurgu istegidir; gozlukten kare cekilmez.
+        if store.pendingVideo != nil {
+            store.send(text: text)
+            return
+        }
         // Yazili soru da gorselse kare gozlukten cekilir; kullanicinin elle
         // fotograf cekmesi Developer Mode oncesinin kalintisiydi.
         if VisionIntent.needsPhoto(text) {
@@ -404,6 +468,30 @@ private struct RouteLabel: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
+    }
+}
+
+/// Bilgisayarda kurgulanan videonun durumu: yukleme yuzdesi, bilgisayardaki
+/// adim ("konusmayi yaziya ceviriyor"), indirme.
+private struct VideoJobRow: View {
+    @ObservedObject var service: VideoJobService
+
+    var body: some View {
+        if let line = service.statusLine {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: "film.stack")
+                    Text(line).font(.caption).lineLimit(2)
+                    Spacer()
+                }
+                if let progress = service.uploadProgress {
+                    ProgressView(value: progress)
+                }
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal)
+            .padding(.top, 4)
+        }
     }
 }
 

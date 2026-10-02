@@ -8,7 +8,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "1.4.0"
-    CURRENT_PROJECT_VERSION: "5"
+    CURRENT_PROJECT_VERSION: "6"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
@@ -52,6 +52,10 @@ targets:
         NSSpeechRecognitionUsageDescription: Soylediklerini yaziya cevirmek icin konusma tanima gerekiyor.
         NSCameraUsageDescription: "\"Bu ne\" gibi sorularda gonderdigin fotografi cekmek icin kamera gerekiyor."
         NSPhotoLibraryUsageDescription: Var olan bir fotografi Junior'a sormak icin galeri erisimi gerekiyor.
+        NSPhotoLibraryAddUsageDescription: Junior'in bilgisayarda kurguladigi videoyu Fotograflar'a kaydetmek icin gerekiyor.
+        # Kurgulanan videolar Dosyalar uygulamasinda da gorunsun (Junior klasoru).
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         # Yerel aglarda kendi sunucuna duz HTTP ile baglanabilmek icin; uzak adres HTTPS'tir.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

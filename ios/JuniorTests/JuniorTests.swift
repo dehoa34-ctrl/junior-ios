@@ -594,3 +594,32 @@ final class PhoneTaskTests: XCTestCase {
         XCTAssertEqual(parse("{\"tasks\": []}"), [])
     }
 }
+
+/// Bilgisayarda kurgulanan video işinin durumu (/v1/desktop/jobs/{id}).
+final class DesktopJobStatusTests: XCTestCase {
+    private func parse(_ json: String) -> DesktopJobStatus? {
+        DesktopJobStatus.parse(json.data(using: .utf8)!)
+    }
+
+    func testParsesStatusAndShowsProgress() {
+        let running = parse("""
+        {"id": "j1", "status": "running", "progress": "Videodaki konuşmayı yazıya çeviriyor", "reply": "", "has_result": false, "desktop_online": true}
+        """)
+        XCTAssertEqual(running?.state, .running)
+        XCTAssertEqual(running?.line, "Bilgisayarda: Videodaki konuşmayı yazıya çeviriyor")
+        let done = parse("""
+        {"id": "j1", "status": "done", "progress": "", "reply": "32 saniyeye indirdim.", "has_result": true, "desktop_online": true}
+        """)
+        XCTAssertEqual(done?.hasResult, true)
+        XCTAssertEqual(done?.reply, "32 saniyeye indirdim.")
+    }
+
+    func testQueuedJobSaysWhenDesktopAppIsClosed() {
+        let offline = parse("{\"status\": \"queued\", \"desktop_online\": false}")
+        XCTAssertTrue(offline?.line.contains("kapalı") ?? false)
+        let online = parse("{\"status\": \"queued\", \"desktop_online\": true}")
+        XCTAssertFalse(online?.line.contains("kapalı") ?? true)
+        XCTAssertNil(parse("{\"status\": \"weird\"}"))
+        XCTAssertNil(parse("çöp"))
+    }
+}

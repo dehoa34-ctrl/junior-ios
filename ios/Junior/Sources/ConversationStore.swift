@@ -19,6 +19,12 @@ final class ConversationStore: ObservableObject {
 
     private var lastAttempt: (text: String, target: String?)?
 
+    /// Galeriden secilmis, gonderilmeyi bekleyen video. Doluyken gonderilen
+    /// mesaj ("bunu editle") bilgisayardaki Junior'a kurgu isi olarak gider.
+    @Published var pendingVideo: PickedVideo?
+    let videoJobs = VideoJobService()
+    private var videoTask: Task<Void, Never>?
+
     /// Bir tur bittiğinde çağrılır. `nil` yalnız **tek bir anlama** gelir:
     /// yanıt geldi ve `speech` onu seslendirmeye başlıyor. Dolu değer,
     /// söylenecek/gösterilecek metindir.
@@ -50,6 +56,10 @@ final class ConversationStore: ObservableObject {
         // dinlemesi duraklatilmis durumdadir ve bir daha geri alinmaz, yani
         // token girilmemisken ilk "Hey Junior"dan sonra asistan sessizce olur.
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let video = pendingVideo {
+            sendVideo(video, text: trimmed)
+            return
+        }
         guard !trimmed.isEmpty, !isSending else {
             // nil "yanit geliyor, seslendiriliyor" demek; burada seslendirilecek
             // bir sey yok, o yuzden her iki durum da metinle bildirilir.
@@ -112,6 +122,63 @@ final class ConversationStore: ObservableObject {
                 onTurnEnded?(description)
             }
         }
+    }
+
+    // MARK: - Video: telefondan sec, bilgisayarda kurgulat
+
+    private func sendVideo(_ video: PickedVideo, text: String) {
+        guard videoTask == nil else {
+            onTurnEnded?("Önceki video hâlâ işleniyor; bitince yenisini gönderebilirsin.")
+            return
+        }
+        pendingVideo = nil
+        errorText = nil
+        let request = text.isEmpty ? "Bunu editle" : text
+        messages.append(ChatMessage(role: .user, text: "🎬 \(video.name) · \(video.sizeLabel)\n\(request)"))
+        archive.save(messages)
+        // Tur hemen biter: kurgu dakikalar surebilir, eller serbest dongusu beklemesin.
+        onTurnEnded?("Videoyu bilgisayara gönderiyorum; kurgu bitince haber vereceğim.")
+        videoTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.videoTask = nil }
+            do {
+                let jobID = try await self.videoJobs.submit(video, prompt: text, config: self.config)
+                try await self.finishVideo(jobID)
+            } catch {
+                self.videoFailed(error)
+            }
+        }
+    }
+
+    /// Uygulama yeniden acildiginda yarim kalan kurgu isini izlemeye devam eder.
+    func resumeVideoJob() {
+        guard videoTask == nil, let jobID = videoJobs.pendingJobID else { return }
+        videoTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.videoTask = nil }
+            do {
+                try await self.finishVideo(jobID)
+            } catch {
+                self.videoFailed(error)
+            }
+        }
+    }
+
+    private func finishVideo(_ jobID: String) async throws {
+        let reply = try await videoJobs.follow(jobID: jobID, config: config)
+        messages.append(ChatMessage(role: .assistant, text: reply))
+        archive.save(messages)
+        VideoJobService.notifyDone(reply)
+    }
+
+    private func videoFailed(_ error: Error) {
+        if case VideoJobError.cancelled = error { return }
+        let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        let text = videoJobs.pendingJobID != nil
+            ? "Bilgisayara şu an ulaşılamıyor; video orada işleniyor olabilir. Uygulamayı açınca tekrar bakacağım."
+            : "Video işi tamamlanamadı: \(description)"
+        messages.append(ChatMessage(role: .assistant, text: text))
+        archive.save(messages)
     }
 
     /// "Bilgisayarda mi telefonda mi?" sorusuna cevap: ayni komutu hedefle tekrar gonderir.
