@@ -5,13 +5,16 @@ import SwiftUI
 struct DotCatView: View {
     var color: Color
     var eyesClosed: Bool = false
+    /// Izgara genişliği. Verilmezse boyuta göre seçilir (ada için). Uygulamadaki
+    /// rozetler 15 ister: 12 sütunda gözler düşüyor, yüz "W" gibi görünüyordu.
+    var columns: Int? = nil
 
     var body: some View {
         Canvas { context, size in
             let side = min(size.width, size.height)
             guard side > 0 else { return }
             // Küçük boyutta (Dynamic Island kompakt ~20 pt) 9 nokta, büyükte 15 nokta genişlik.
-            let columns = side < 28 ? 9 : side < 48 ? 12 : 15
+            let columns = self.columns ?? (side < 28 ? 9 : side < 48 ? 12 : 15)
             let step = 2.0 / Double(columns - 1)
             let originX = (size.width - side) / 2
             let originY = (size.height - side) / 2

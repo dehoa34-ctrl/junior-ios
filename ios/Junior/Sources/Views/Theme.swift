@@ -47,7 +47,7 @@ struct JuniorCat: View {
     @State private var blink = false
 
     var body: some View {
-        DotCatView(color: phase.color, eyesClosed: phase.eyesClosed || blink)
+        DotCatView(color: phase.color, eyesClosed: phase.eyesClosed || blink, columns: 15)
             .frame(width: size, height: size)
             .shadow(color: glow ? phase.color.opacity(0.55) : .clear, radius: size * 0.18)
             .animation(.easeInOut(duration: 0.4), value: phase)
@@ -70,7 +70,7 @@ struct CatBadge: View {
     var size: CGFloat = 40
 
     var body: some View {
-        JuniorCat(phase: phase, size: size * 0.78)
+        JuniorCat(phase: phase, size: size * 0.84)
             .frame(width: size, height: size)
             .background(Circle().fill(phase.color.opacity(0.14)))
             .overlay(Circle().stroke(phase.color.opacity(0.35), lineWidth: 1))

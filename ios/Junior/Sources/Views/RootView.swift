@@ -167,7 +167,7 @@ struct RootView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            CatBadge(phase: isBusy ? visualPhase : .done, size: 42)
+            CatBadge(phase: isBusy ? visualPhase : .listening, size: 42)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Junior").font(JuniorTheme.rounded(.title3, .bold))
                 headerStatus
@@ -826,7 +826,7 @@ private struct MessageRow: View {
             }
         } else {
             HStack(alignment: .top, spacing: 10) {
-                CatBadge(phase: .done, size: 28)
+                CatBadge(phase: .listening, size: 28)
                 Text(message.text)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
