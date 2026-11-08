@@ -17,9 +17,55 @@ enum WakeWord {
         return String(lowered.map { map[$0] ?? $0 })
     }
 
+    /// "Junior"un söyleyişe göre sadeleşmiş biçimleri (bkz. `sound`).
+    private static let soundsLike = ["cunior", "cunir", "conior"]
+
+    /// Tanımanın yazdığı her biçimi listelemek mümkün değil ("cünyır", "jüniyor",
+    /// "cuniör"...); söyleyişe göre sadeleştirilip yakınlığa bakılır. j ile c
+    /// aynı duyuluyor, ünlüler arasındaki y de i gibi.
+    static func sound(_ word: String) -> String {
+        var out = ""
+        for character in fold(word) {
+            let mapped: Character = character == "j" ? "c" : character == "y" ? "i" : character
+            if mapped == "i", out.last == "i" { continue }
+            out.append(mapped)
+        }
+        return out
+    }
+
     static func matches(_ transcript: String) -> Bool {
         let folded = fold(transcript)
-        return phrases.contains { folded.contains($0) }
+        if phrases.contains(where: { folded.contains($0) }) { return true }
+        let words = folded.split(whereSeparator: { !$0.isLetter }).map(String.init)
+        // Tanıma sözcüğü ikiye bölebiliyor ("cün yor"): ardışık çiftler de denenir.
+        var candidates = words
+        if words.count > 1 {
+            for index in 0..<(words.count - 1) { candidates.append(words[index] + words[index + 1]) }
+        }
+        return candidates.contains { word in
+            let key = sound(word)
+            // Kısa ya da c ile başlamayan sözcükler hiç denenmez: "cin", "Caner",
+            // "Çınar", "cüneyt" bu kuralla tutmuyor (en az iki harf farkı var).
+            guard key.first == "c", (4...8).contains(key.count) else { return false }
+            return soundsLike.contains { editDistance(key, $0) <= 1 }
+        }
+    }
+
+    /// Harf ekleme/silme/değiştirme sayısı.
+    static func editDistance(_ a: String, _ b: String) -> Int {
+        let a = Array(a), b = Array(b)
+        guard !a.isEmpty else { return b.count }
+        guard !b.isEmpty else { return a.count }
+        var previous = Array(0...b.count)
+        for i in 1...a.count {
+            var current = [i] + Array(repeating: 0, count: b.count)
+            for j in 1...b.count {
+                current[j] = min(previous[j] + 1, current[j - 1] + 1,
+                                 previous[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+            }
+            previous = current
+        }
+        return previous[b.count]
     }
 }
 
@@ -154,6 +200,8 @@ final class WakeWordService: ObservableObject {
         do {
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
+            // Sözlükte olmayan "Junior"u tanıma "cüneyt", "günü" diye yazıyordu.
+            request.contextualStrings = ["Junior", "Hey Junior"]
             // Varsa cihaz üstünde kalsın: sesi buluta göndermemek hem gizlilik
             // hem de Apple'ın istek sınırlarına takılmamak için önemli. Ama
             // cihaz üstü mod çalışmıyorsa (art arda sessiz hatalar) sunucuya

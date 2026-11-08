@@ -63,11 +63,14 @@ jobs:
                   continue
               for device in devices:
                   if device.get('isAvailable') and device['name'].startswith('iPhone'):
-                      print(device['name'])
+                      print(device['name'] + '|' + device['udid'])
                       raise SystemExit
           ")
           test -n "$DEVICE" || { echo "Kullanilabilir iPhone simulatoru yok"; exit 1; }
           echo "Simulator: $DEVICE"
+          # Ayni ad birden cok iOS surumunde olabiliyor; kimlikle secilir.
+          UDID="${DEVICE#*|}"
+          echo "$UDID" > .sim_udid
           # Paralel test, bu boyuttaki bir takim icin simulator klonlari acip
           # dakikalar harciyor; testler kendisi iki saniye suruyor.
           #
@@ -77,7 +80,8 @@ jobs:
           xcodebuild test \
             -project Junior.xcodeproj \
             -scheme Junior \
-            -destination "platform=iOS Simulator,name=$DEVICE" \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            -derivedDataPath DerivedSim \
             -clonedSourcePackagesDirPath SourcePackages \
             -parallel-testing-enabled NO \
             -enableCodeCoverage NO \
@@ -93,6 +97,39 @@ jobs:
             exit $status
           fi
           grep -E "Executed [0-9]+ tests" test.log | tail -1 || true
+
+      # Arayuz Mac olmadan da gorulsun: ornek ekranlar (DemoMode, yalniz Debug
+      # derlemesinde) simulatorde acilip fotograflanir. Basarisiz olursa .ipa
+      # yine uretilir.
+      - name: Ekran goruntuleri (simulator)
+        working-directory: ios
+        continue-on-error: true
+        run: |
+          UDID="$(cat .sim_udid)"
+          APP="DerivedSim/Build/Products/Debug-iphonesimulator/Junior.app"
+          test -d "$APP" || { echo "Simulator uygulamasi yok"; exit 1; }
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b >/dev/null
+          xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged \
+            --batteryLevel 100 --cellularBars 4 --wifiBars 3 || true
+          xcrun simctl install "$UDID" "$APP"
+          mkdir -p shots
+          for scene in empty chat listening settings; do
+            xcrun simctl terminate "$UDID" xyz.jrbilge.junior 2>/dev/null || true
+            xcrun simctl launch "$UDID" xyz.jrbilge.junior -JuniorDemo "$scene"
+            sleep 7
+            xcrun simctl io "$UDID" screenshot "shots/$scene.png"
+          done
+          ls -l shots
+
+      - name: Ekran goruntulerini yukle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Junior-screens
+          path: ios/shots
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Derle (imzasiz)
         working-directory: ios

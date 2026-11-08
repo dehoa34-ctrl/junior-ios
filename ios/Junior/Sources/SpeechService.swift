@@ -24,6 +24,15 @@ final class SpeechService: NSObject, ObservableObject {
     /// iOS'un yerlesik sesi kullanilir; Junior hicbir durumda sessiz kalmaz.
     var remoteTTS: ((String) async throws -> Data)?
 
+    /// Söyleneni sunucudaki whisper'a yazdırır (WAV gönderir, metin alır).
+    /// Ayarlı değilse, geç kalırsa ya da hata verirse Apple'ın metni kullanılır.
+    var remoteSTT: ((Data) async throws -> String)?
+    /// Konuşma bitti, sunucu yazıya çeviriyor.
+    @Published private(set) var transcribing = false
+    /// Sunucu tanımasını bekleme sınırı; aşılırsa Apple'ın metniyle devam edilir.
+    private static let remoteSTTTimeout: TimeInterval = 8
+    private var capture: PCMCapture?
+
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "tr-TR"))
     private let synthesizer = AVSpeechSynthesizer()
     private var request: SFSpeechAudioBufferRecognitionRequest?
@@ -106,13 +115,17 @@ final class SpeechService: NSObject, ObservableObject {
         do {
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
+            request.taskHint = .dictation
+            request.contextualStrings = ["Junior", "Spotify", "WhatsApp", "YouTube", "Instagram", "Reels", "Telegram"]
             self.request = request
+            // Sesin kopyası tutulur: konuşma bitince sunucudaki whisper'a gider.
+            capture = remoteSTT == nil ? nil : PCMCapture()
 
             // Mikrofon MicrophoneHub'in ve uyandirma dinlemesiyle paylasiliyor.
             // Kendi motorumuzu kurmak, kilitli telefonda yeni kayit oturumu
             // acmak demek olurdu - iOS buna izin vermiyor ve devralma
             // "mikrofon baslatilamadi" ile dusuyordu.
-            try MicrophoneHub.shared.attach(request)
+            try MicrophoneHub.shared.attach(request, capture: capture)
             state = .listening
             // Ses oturumu acildiktan sonra bakiyoruz: yol ancak o zaman kesinlesir.
             route.beginListening()
@@ -135,6 +148,14 @@ final class SpeechService: NSObject, ObservableObject {
         }
     }
 
+    #if DEBUG
+    /// Ekran görüntüsü için: mikrofon açmadan dinleme kartını gösterir.
+    func showDemoListening(_ text: String) {
+        partialText = text
+        state = .listening
+    }
+    #endif
+
     func stopListening() {
         guard state == .listening else { return }
         finishListening()
@@ -152,6 +173,8 @@ final class SpeechService: NSObject, ObservableObject {
     private func finishListening() {
         guard state == .listening else { return }
         let text = partialText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let recorded = capture
+        capture = nil
         teardown()
         // Bos metinde de haber verilir. Eskiden verilmiyordu: "Hey Junior"
         // deyip susan biri dinlemeyi sessizlik zamanlayicisiyla bitiriyor,
@@ -159,10 +182,41 @@ final class SpeechService: NSObject, ObservableObject {
         // .listening adiminda takili kaliyordu.
         let callback = onFinish
         onFinish = nil
-        callback?(text)
+        // Apple hic bir sey duymadiysa sunucuya gitmeye gerek yok: whisper
+        // sessizlige "Altyazi M.K." gibi uydurma metin yazabiliyor.
+        guard let remoteSTT, let recorded, !text.isEmpty, recorded.seconds >= 0.5 else {
+            callback?(text)
+            return
+        }
+        transcribing = true
+        let wav = recorded.wav()
+        Task { [weak self] in
+            let better = await Self.withTimeout(Self.remoteSTTTimeout) { try await remoteSTT(wav) }
+            let heard = better?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard let self else { return }
+            self.transcribing = false
+            if !heard.isEmpty { self.partialText = heard }
+            callback?(heard.isEmpty ? text : heard)
+        }
+    }
+
+    /// İşi en fazla `seconds` bekler; geç kalır ya da hata verirse nil.
+    nonisolated private static func withTimeout<T: Sendable>(_ seconds: TimeInterval,
+                                                             _ work: @escaping @Sendable () async throws -> T) async -> T? {
+        await withTaskGroup(of: T?.self) { group in
+            group.addTask { try? await work() }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
     }
 
     private func teardown() {
+        capture = nil
         route.endListening()
         silenceTimer?.invalidate()
         silenceTimer = nil
@@ -352,19 +406,9 @@ final class SpeechService: NSObject, ObservableObject {
                 samples.append(Int16(value * Double(Int16.max)))
             }
         }
-        var data = Data()
-        func append<T>(_ value: T) {
-            withUnsafeBytes(of: value) { data.append(contentsOf: $0) }
-        }
-        let bytes = UInt32(samples.count * 2)
-        data.append(contentsOf: Array("RIFF".utf8)); append((36 + bytes).littleEndian)
-        data.append(contentsOf: Array("WAVE".utf8)); data.append(contentsOf: Array("fmt ".utf8))
-        append(UInt32(16).littleEndian); append(UInt16(1).littleEndian); append(UInt16(1).littleEndian)
-        append(UInt32(44_100).littleEndian); append(UInt32(88_200).littleEndian)
-        append(UInt16(2).littleEndian); append(UInt16(16).littleEndian)
-        data.append(contentsOf: Array("data".utf8)); append(bytes.littleEndian)
-        for sample in samples { append(sample.littleEndian) }
-        return data
+        var body = Data()
+        for sample in samples { withUnsafeBytes(of: sample.littleEndian) { body.append(contentsOf: $0) } }
+        return WAVFile.pcm16(body, sampleRate: Int(rate))
     }()
 
     func stopSpeaking() {

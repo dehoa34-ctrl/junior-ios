@@ -163,6 +163,20 @@ actor JuniorClient {
         return data
     }
 
+    /// Konusmayi sunucudaki whisper'a yazdirir. Govde 16 kHz tek kanal WAV.
+    func stt(url: URL, token: String, wav: Data) async throws -> String {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        request.httpMethod = "POST"
+        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
+        request.httpBody = wav
+        let (data, response) = try await perform(request)
+        try check(response: response, data: data)
+        let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        return parsed?["text"] as? String ?? ""
+    }
+
     /// QR eslestirmesinden hemen sonra: belirtec ve tunel calisiyor mu, bilgisayara
     /// "eslestim" de (masaustundeki QR penceresi bunu gorunce "baglandi" der).
     /// Bu ucu bilmeyen eski sunucuda yetenek ucuyla yalniz baglanti denenir.

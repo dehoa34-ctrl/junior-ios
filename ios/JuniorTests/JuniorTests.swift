@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 import UIKit
 @testable import Junior
 
@@ -233,9 +234,21 @@ final class WakeWordMatchingTests: XCTestCase {
     func testUnrelatedSpeechDoesNotTrigger() {
         // "junyor" bilerek tetikler: Turkce tanima "junior"i coju zaman boyle
         // yazar. Gercekten ilgisiz olanlar burada.
-        for text in ["bugün hava nasıl", "müziği duraklat", "junio", "juno kim"] {
+        // "junio" artik tetikler: gozlugun dar bantli sesinde tanima sondaki
+        // "r"yi yutuyor. Yerine gunluk konusmada sik gecen yakin sozcukler var.
+        for text in ["bugün hava nasıl", "müziği duraklat", "juno kim", "Caner geldi mi",
+                     "çınar ağacı", "Cüneyt aradı", "cuma günü", "çünkü geç kaldım", "cin gibi"] {
             XCTAssertFalse(detects(text), "tetiklememeliydi: \(text)")
         }
+    }
+
+    func testSoundAlikeSpellingsTrigger() {
+        // Listede tek tek yazmadigimiz bicimler soyleyis yakinligindan tutar.
+        for text in ["cünyır", "Cünyör geldin mi", "jüniyor", "cuniör", "cün yır", "Hey Junio"] {
+            XCTAssertTrue(detects(text), "tetiklemeliydi: \(text)")
+        }
+        XCTAssertEqual(WakeWord.sound("Jünyör"), "cunior")
+        XCTAssertEqual(WakeWord.editDistance("cunir", "cunior"), 1)
     }
 
     func testCommonMishearingsStillTrigger() {
@@ -621,5 +634,33 @@ final class DesktopJobStatusTests: XCTestCase {
         XCTAssertFalse(online?.line.contains("kapalı") ?? true)
         XCTAssertNil(parse("{\"status\": \"weird\"}"))
         XCTAssertNil(parse("çöp"))
+    }
+}
+
+final class AudioCaptureTests: XCTestCase {
+    func testWavHeaderWrapsPCM() {
+        let wav = WAVFile.pcm16(Data(count: 3200), sampleRate: 16_000)
+        XCTAssertEqual(wav.count, 44 + 3200)
+        XCTAssertEqual(String(data: wav.prefix(4), encoding: .ascii), "RIFF")
+        XCTAssertEqual(String(data: wav.subdata(in: 8..<12), encoding: .ascii), "WAVE")
+    }
+
+    func testCaptureConvertsMicrophoneFormatTo16kHz() throws {
+        // Gozlugun HFP girisi 16 kHz, iPhone mikrofonu 48 kHz: ikisi de 16 kHz'e iner.
+        for rate in [48_000.0, 16_000.0] {
+            let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1))
+            let capture = PCMCapture()
+            for _ in 0..<10 {
+                let frames = AVAudioFrameCount(rate / 10)
+                let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+                buffer.frameLength = frames
+                for index in 0..<Int(frames) {
+                    buffer.floatChannelData![0][index] = Float(sin(Double(index) * 0.05) * 0.3)
+                }
+                capture.append(buffer)
+            }
+            XCTAssertEqual(capture.seconds, 1.0, accuracy: 0.05, "\(rate) Hz")
+            XCTAssertGreaterThan(capture.wav().count, 44 + 30_000)
+        }
     }
 }

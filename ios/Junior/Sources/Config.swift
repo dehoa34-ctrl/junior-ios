@@ -11,6 +11,7 @@ final class Config: ObservableObject {
         static let wakeWordEnabled = "junior.wakeWordEnabled"
         static let naturalVoice = "junior.naturalVoice"
         static let continuous = "junior.continuousConversation"
+        static let serverRecognition = "junior.serverRecognition"
         static let tokenAccessMigrated = "junior.tokenAccessAfterFirstUnlock"
     }
 
@@ -62,6 +63,21 @@ final class Config: ObservableObject {
         didSet { UserDefaults.standard.set(continuousEnabled, forKey: Keys.continuous) }
     }
 
+    /// Gözlük (ya da kulaklık) bağlıyken mikrofon ondan alınır. Kapalıyken
+    /// iPhone'un mikrofonu kullanılır; ses gözlükten A2DP kalitesinde çalar.
+    @Published var headsetMicEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(headsetMicEnabled, forKey: MicrophoneHub.headsetMicKey)
+            MicrophoneHub.shared.preferHeadsetMicIfWanted()
+        }
+    }
+
+    /// Söylenenler sunucudaki whisper ile yazıya çevrilir (Apple'ın Türkçe
+    /// tanımasından belirgin biçimde doğru). Kapalıyken yalnız Apple kullanılır.
+    @Published var serverRecognitionEnabled: Bool {
+        didSet { UserDefaults.standard.set(serverRecognitionEnabled, forKey: Keys.serverRecognition) }
+    }
+
     init() {
         // Varsayilan yok: adres kisiye ozel. Bos birakilinca uygulama
         // "sunucu adresi eksik" uyarisini gosterip Ayarlar'a goturuyor.
@@ -80,7 +96,12 @@ final class Config: ObservableObject {
         wakeWordEnabled = (UserDefaults.standard.object(forKey: Keys.wakeWordEnabled) as? Bool) ?? true
         naturalVoiceEnabled = (UserDefaults.standard.object(forKey: Keys.naturalVoice) as? Bool) ?? true
         continuousEnabled = (UserDefaults.standard.object(forKey: Keys.continuous) as? Bool) ?? true
+        headsetMicEnabled = (UserDefaults.standard.object(forKey: MicrophoneHub.headsetMicKey) as? Bool) ?? true
+        serverRecognitionEnabled = (UserDefaults.standard.object(forKey: Keys.serverRecognition) as? Bool) ?? true
         liveActivityEnabled = (UserDefaults.standard.object(forKey: JuniorLiveActivity.enabledKey) as? Bool) ?? true
+        #if DEBUG
+        DemoMode.prepare(self)
+        #endif
     }
 
     var token: String? {

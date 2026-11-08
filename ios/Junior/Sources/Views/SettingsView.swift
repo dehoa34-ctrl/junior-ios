@@ -13,42 +13,39 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Sunucu") {
+                Section {
+                    HStack(spacing: 14) {
+                        CatBadge(phase: config.hasToken ? .done : .waiting, size: 54)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Junior").font(JuniorTheme.rounded(.title2, .bold))
+                            Text(config.hasToken ? "Bilgisayarındaki asistana bağlı" : "Henüz bilgisayara bağlı değil")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .listRowBackground(Color.clear)
+                }
+
+                Section {
                     TextField("https://sunucu-adresin", text: $config.baseURL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
-                }
-
-                // Basligi ayri header olarak veriyoruz: Section(_ title:) footer: ile birlesmiyor.
-                Section {
                     if config.hasToken {
-                        Label("Token kayitli", systemImage: "checkmark.seal.fill")
-                            .foregroundStyle(.green)
+                        Label("Belirteç kayıtlı", systemImage: "checkmark.seal.fill")
+                            .foregroundStyle(JuniorTheme.green)
                     }
-                    SecureField(config.hasToken ? "Degistirmek icin yeni token" : "MOBILE_API_TOKEN",
+                    SecureField(config.hasToken ? "Değiştirmek için yeni belirteç" : "MOBILE_API_TOKEN",
                                 text: $tokenDraft)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Button("Kaydet") {
+                    Button("Belirteci kaydet") {
                         config.setToken(tokenDraft)
                         tokenDraft = ""
                         testResult = nil
                     }
                     .disabled(tokenDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    if config.hasToken {
-                        Button("Tokeni sil", role: .destructive) {
-                            config.setToken("")
-                            testResult = nil
-                        }
-                    }
-                } header: {
-                    Text("Erisim tokeni")
-                } footer: {
-                    Text("Token bilgisayardaki .env dosyasindaki MOBILE_API_TOKEN degeridir. Cihazda Keychain icinde saklanir ve hicbir yere gonderilmez.")
-                }
-
-                Section {
                     Button {
                         testing = true
                         Task {
@@ -57,7 +54,7 @@ struct SettingsView: View {
                         }
                     } label: {
                         HStack {
-                            Text("Baglantiyi dene")
+                            Label { Text("Bağlantıyı dene") } icon: { SettingIcon(systemName: "bolt.horizontal.fill", color: JuniorTheme.green) }
                             if testing { Spacer(); ProgressView() }
                         }
                     }
@@ -65,48 +62,81 @@ struct SettingsView: View {
                     if let testResult {
                         Text(testResult).font(.footnote).foregroundStyle(.secondary)
                     }
+                    if config.hasToken {
+                        Button("Belirteci sil", role: .destructive) {
+                            config.setToken("")
+                            testResult = nil
+                        }
+                    }
+                } header: {
+                    Text("Bilgisayar")
+                } footer: {
+                    Text("En kolayı: bilgisayardaki Junior'da Telefon bölümündeki QR kodu kamerayla okut. "
+                         + "Belirteç cihazda Keychain içinde saklanır ve hiçbir yere gönderilmez.")
                 }
 
                 Section {
-                    Toggle("\"Hey Junior\" ile uyandır", isOn: $config.wakeWordEnabled)
-                    Toggle("Sürekli sohbet", isOn: $config.continuousEnabled)
-                        .disabled(!config.wakeWordEnabled)
+                    Toggle(isOn: $config.wakeWordEnabled) {
+                        Label { Text("\"Hey Junior\" ile uyandır") } icon: { SettingIcon(systemName: "ear.fill", color: JuniorTheme.cyan) }
+                    }
+                    Toggle(isOn: $config.continuousEnabled) {
+                        Label { Text("Sürekli sohbet") } icon: { SettingIcon(systemName: "bubble.left.and.bubble.right.fill", color: JuniorTheme.violet) }
+                    }
+                    .disabled(!config.wakeWordEnabled)
+                    Toggle(isOn: $config.headsetMicEnabled) {
+                        Label { Text("Gözlük mikrofonu") } icon: { SettingIcon(systemName: "eyeglasses", color: JuniorTheme.blue) }
+                    }
+                    Toggle(isOn: $config.serverRecognitionEnabled) {
+                        Label { Text("Doğru tanıma (sunucu)") } icon: { SettingIcon(systemName: "waveform.badge.magnifyingglass", color: JuniorTheme.green) }
+                    }
                 } header: {
-                    Text("Uyandırma sözcüğü")
+                    Text("Dinleme")
                 } footer: {
-                    Text("Açıkken uygulama sürekli dinler ve \"Hey Junior\" duyunca kaydı başlatır. "
-                         + "Yalnız uygulama açıkken ya da arka planda çalışırken duyar; iOS sistem "
-                         + "düzeyinde özel uyandırma sözcüğüne izin vermiyor. Mikrofonu sürekli açık "
-                         + "tuttuğu için pil tüketir. Kilit ekranından erişim için \"Hey Siri, "
-                         + "Junior'a sor …\" kullan. "
-                         + "Sürekli sohbet açıkken yanıttan sonra doğrudan dinlemeye dönülür; "
-                         + "her soru için yeniden \"Hey Junior\" demen gerekmez. Bitirmek için "
-                         + "\"kapat\" de ya da bir şey söylemeden bekle.")
+                    Text("Uygulama açıkken (arka planda da) \"Hey Junior\" dinlenir; iOS kilitli ekranda özel "
+                         + "uyandırma sözcüğüne izin vermiyor, orada \"Hey Siri, Junior'a sor …\" kullan. "
+                         + "Gözlük mikrofonu açıkken gözlük bağlanınca mikrofon ondan alınır; telefon cepteyken "
+                         + "gözlükten \"Junior\" demek için gerekli (ses bu sırada telefon görüşmesi kalitesinde çalar). "
+                         + "Doğru tanıma açıkken söylediğin bilgisayardaki whisper ile yazıya çevrilir; "
+                         + "ulaşılamazsa iPhone'un kendi tanıması kullanılır.")
                 }
 
                 Section {
-                    Toggle("Dynamic Island'da göster", isOn: $config.liveActivityEnabled)
+                    Toggle(isOn: $config.naturalVoiceEnabled) {
+                        Label { Text("Doğal ses (sunucudan)") } icon: { SettingIcon(systemName: "speaker.wave.2.fill", color: JuniorTheme.orange) }
+                    }
+                    if !config.naturalVoiceEnabled, !SpeechService.hasUpgradedVoice {
+                        Text("Yerleşik sıkıştırılmış ses kullanılacak; robotik duyulur.")
+                            .font(.footnote)
+                    }
+                    Toggle(isOn: $config.liveActivityEnabled) {
+                        Label { Text("Dynamic Island'da göster") } icon: { SettingIcon(systemName: "capsule.fill", color: Color.gray) }
+                    }
                 } header: {
-                    Text("Dinamik ada")
+                    Text("Ses ve görünüm")
                 } footer: {
-                    Text("Junior dinlerken, gözlükten bakarken, düşünürken ve konuşurken Dynamic Island'da "
-                         + "(Dynamic Island olmayan iPhone'larda kilit ekranında) noktalı kedi ve son yanıt görünür. "
-                         + "iOS kuralı gereği etkinlik uygulama öndeyken başlar; sonra arka planda güncellenir.")
+                    Text("Doğal ses açıkken yanıtlar bilgisayardaki nöral Türkçe sesle okunur; sunucuya ulaşılamazsa "
+                         + "iOS'un kendi sesi devreye girer (Ayarlar > Erişilebilirlik > Sözlü İçerik > Sesler > "
+                         + "Türkçe'den gelişmiş sesi indirirsen o kullanılır). Dynamic Island'da dinlerken, "
+                         + "düşünürken ve konuşurken noktalı kedi ve son yanıt görünür.")
                 }
 
                 Section {
                     LabeledContent("Kayıt", value: glasses.registrationInfo)
                     LabeledContent("Kamera izni", value: glasses.permissionInfo)
                     LabeledContent("Görünen cihaz", value: glasses.deviceInfo)
-                    Button("1. Uygulamayı Meta AI'a tanıt") {
+                    Button {
                         Task { await glasses.register() }
+                    } label: {
+                        Label { Text("1. Uygulamayı Meta AI'a tanıt") } icon: { SettingIcon(systemName: "link", color: JuniorTheme.blue) }
                     }
-                    Button("2. Gözlüğe bağlan ve kamera izni ver") {
+                    Button {
                         Task { await glasses.connect() }
+                    } label: {
+                        Label { Text("2. Gözlüğe bağlan ve kamera izni ver") } icon: { SettingIcon(systemName: "camera.fill", color: JuniorTheme.cyan) }
                     }
                     .disabled(glasses.state == .connecting)
                     if case .failed(let reason) = glasses.state {
-                        Text(reason).font(.footnote).foregroundStyle(.red)
+                        Text(reason).font(.footnote).foregroundStyle(JuniorTheme.red)
                     } else if glasses.state == .connecting {
                         HStack(spacing: 8) {
                             ProgressView()
@@ -117,10 +147,10 @@ struct SettingsView: View {
                         }
                     } else if glasses.isReady {
                         Label("Gözlük bağlı", systemImage: "checkmark.seal.fill")
-                            .foregroundStyle(.green)
+                            .foregroundStyle(JuniorTheme.green)
                     }
                 } header: {
-                    Text("Gözlük")
+                    Text("Gözlük kamerası")
                 } footer: {
                     Text("İlk kurulumda: 1'e dokun, Meta AI açılır, onayla ve geri dön. "
                          + "Sonra gözlük takılıyken 2'ye dokun: önce gözlüğe bağlanır, kamera izni "
@@ -131,35 +161,25 @@ struct SettingsView: View {
                 .onAppear { glasses.observeRegistration() }
 
                 Section {
-                    Toggle("Doğal ses (sunucudan)", isOn: $config.naturalVoiceEnabled)
-                    if !config.naturalVoiceEnabled, !SpeechService.hasUpgradedVoice {
-                        Text("Yerleşik sıkıştırılmış ses kullanılacak; robotik duyulur.")
-                            .font(.footnote)
-                    }
+                    LabeledContent("Sürüm", value: Bundle.main.appVersion)
                 } header: {
-                    Text("Ses")
+                    Text("Bilgi")
                 } footer: {
-                    Text("Açıkken yanıtlar bilgisayardaki nöral Türkçe sesle okunur (Meta AI "
-                         + "kalitesine yakın). Sunucuya ulaşılamazsa iOS'un kendi sesi devreye "
-                         + "girer. Yerleşik sesi iyileştirmek için: Ayarlar > Erişilebilirlik > "
-                         + "Sözlü İçerik > Sesler > Türkçe'den Gelişmiş sesi indir.")
-                }
-
-                Section("Bilgi") {
-                    LabeledContent("Surum", value: Bundle.main.appVersion)
-                    Text("Junior yaniti bilgisayarindaki Claude oturumundan alir. Bilgisayar ve tunel acik olmalidir.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    Text("Junior yanıtı bilgisayarındaki Claude oturumundan alır. Bilgisayar ve tünel açık olmalı.")
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(AmbientBackground(tint: JuniorTheme.cyan.opacity(0.5)))
             .navigationTitle("Ayarlar")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Bitti") { dismiss() }
+                    Button("Bitti") { dismiss() }.fontWeight(.semibold)
                 }
             }
         }
+        .tint(JuniorTheme.cyan)
+        .preferredColorScheme(.dark)
     }
 }
 

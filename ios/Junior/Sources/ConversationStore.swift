@@ -198,6 +198,13 @@ final class ConversationStore: ObservableObject {
         send(text: attempt.text, target: attempt.target)
     }
 
+    #if DEBUG
+    /// Ekran görüntüsü için örnek konuşma; arşive yazılmaz.
+    func loadDemo(_ demo: [ChatMessage]) {
+        messages = demo
+    }
+    #endif
+
     func clear() {
         lastAttempt = nil
         retryable = false

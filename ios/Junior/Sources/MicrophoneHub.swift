@@ -11,17 +11,97 @@ import Speech
 final class RequestBox: @unchecked Sendable {
     private let lock = NSLock()
     private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var capture: PCMCapture?
 
-    func set(_ value: SFSpeechAudioBufferRecognitionRequest?) {
+    func set(_ value: SFSpeechAudioBufferRecognitionRequest?, capture: PCMCapture? = nil) {
         lock.lock(); defer { lock.unlock() }
         request = value
+        self.capture = capture
     }
 
     func append(_ buffer: AVAudioPCMBuffer) {
         lock.lock()
         let current = request
+        let copy = capture
         lock.unlock()
         current?.append(buffer)
+        copy?.append(buffer)
+    }
+}
+
+/// Konuşmanın kopyası: sunucudaki whisper'a gönderilmek üzere 16 kHz tek kanal
+/// 16 bit PCM'e çevrilip biriktirilir. Ses iş parçacığından yazılır.
+///
+/// Apple'ın Türkçe tanıması gözlüğün dar bantlı (HFP) sesinde ve uzun
+/// cümlelerde çok yanılıyor; whisper-large-v3 aynı sesi belirgin biçimde
+/// daha doğru yazıyor.
+final class PCMCapture: @unchecked Sendable {
+    static let sampleRate = 16_000.0
+    private static let maxSeconds = 60.0
+    private let lock = NSLock()
+    private let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: PCMCapture.sampleRate,
+                                       channels: 1, interleaved: true)
+    private var converter: AVAudioConverter?
+    private var source: AVAudioFormat?
+    private var pcm = Data()
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        lock.lock(); defer { lock.unlock() }
+        guard let target, Double(pcm.count) < Self.maxSeconds * Self.sampleRate * 2,
+              buffer.frameLength > 0, buffer.format.sampleRate > 0 else { return }
+        // Gözlük bağlanınca/kopunca giriş biçimi değişir; çevirici yeniden kurulur.
+        if converter == nil || source != buffer.format {
+            converter = AVAudioConverter(from: buffer.format, to: target)
+            source = buffer.format
+        }
+        guard let converter else { return }
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * Self.sampleRate / buffer.format.sampleRate) + 64
+        guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
+        var fed = false
+        var error: NSError?
+        _ = converter.convert(to: out, error: &error) { _, status in
+            if fed {
+                status.pointee = .noDataNow
+                return nil
+            }
+            fed = true
+            status.pointee = .haveData
+            return buffer
+        }
+        guard error == nil, out.frameLength > 0, let channel = out.int16ChannelData else { return }
+        pcm.append(Data(bytes: channel[0], count: Int(out.frameLength) * 2))
+    }
+
+    var seconds: Double {
+        lock.lock(); defer { lock.unlock() }
+        return Double(pcm.count) / 2 / Self.sampleRate
+    }
+
+    /// Biriken sesin WAV hali.
+    func wav() -> Data {
+        lock.lock()
+        let body = pcm
+        lock.unlock()
+        return WAVFile.pcm16(body, sampleRate: Int(Self.sampleRate))
+    }
+}
+
+/// 16 bit tek kanal PCM'i WAV dosyasına sarar.
+enum WAVFile {
+    static func pcm16(_ body: Data, sampleRate: Int) -> Data {
+        var data = Data()
+        func append<T>(_ value: T) {
+            withUnsafeBytes(of: value) { data.append(contentsOf: $0) }
+        }
+        let bytes = UInt32(body.count)
+        data.append(contentsOf: Array("RIFF".utf8)); append((36 + bytes).littleEndian)
+        data.append(contentsOf: Array("WAVE".utf8)); data.append(contentsOf: Array("fmt ".utf8))
+        append(UInt32(16).littleEndian); append(UInt16(1).littleEndian); append(UInt16(1).littleEndian)
+        append(UInt32(sampleRate).littleEndian); append(UInt32(sampleRate * 2).littleEndian)
+        append(UInt16(2).littleEndian); append(UInt16(16).littleEndian)
+        data.append(contentsOf: Array("data".utf8)); append(bytes.littleEndian)
+        data.append(body)
+        return data
     }
 }
 
@@ -54,6 +134,11 @@ final class MicrophoneHub {
     private var observers: [NSObjectProtocol] = []
     private var retryTask: Task<Void, Never>?
 
+    /// Ayarlardaki "Gözlük mikrofonu" anahtarı. Varsayılan açık.
+    static let headsetMicKey = "junior.headsetMic"
+    /// Mikrofonu bu girişlerden almak tercih edilir (gözlük, Bluetooth ya da kablolu kulaklık).
+    private static let headsetPorts: Set<AVAudioSession.Port> = [.bluetoothHFP, .headsetMic]
+
     /// Mikrofon bir servis tarafından tutuluyor mu (o an motor durmuş olsa bile).
     /// Seslendirme bunu sorar: tutulurken ses kategorisi değiştirilmemeli.
     var isWanted: Bool { wanted }
@@ -69,6 +154,14 @@ final class MicrophoneHub {
         observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange,
                                              object: nil, queue: .main) { _ in
             Task { @MainActor in MicrophoneHub.shared.recover() }
+        })
+        observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification,
+                                             object: nil, queue: .main) { note in
+            let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            let reason = raw.flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
+            guard reason == .newDeviceAvailable else { return }
+            // Gözlük dinleme sürerken bağlandı: mikrofonu ona geçir.
+            Task { @MainActor in MicrophoneHub.shared.preferHeadsetMicIfWanted() }
         })
         observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification,
                                              object: nil, queue: .main) { _ in
@@ -86,6 +179,7 @@ final class MicrophoneHub {
         try session.setCategory(.playAndRecord, mode: .spokenAudio,
                                 options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
         try session.setActive(true, options: .notifyOthersOnDeactivation)
+        preferHeadsetMic(session)
 
         let input = engine.inputNode
         // Biçim her seferinde yeniden okunur: gözlük bağlanınca donanım örnekleme
@@ -103,10 +197,35 @@ final class MicrophoneHub {
         isRunning = true
     }
 
-    /// Gelen sesi bu isteğe yazmaya başlar. Motor kapalıysa açar.
-    func attach(_ request: SFSpeechAudioBufferRecognitionRequest) throws {
+    /// Gelen sesi bu isteğe (ve verildiyse kayda) yazmaya başlar. Motor kapalıysa açar.
+    func attach(_ request: SFSpeechAudioBufferRecognitionRequest, capture: PCMCapture? = nil) throws {
         try start()
-        box.set(request)
+        box.set(request, capture: capture)
+    }
+
+    /// Gözlük bağlıysa mikrofonu ondan alır.
+    ///
+    /// `.allowBluetoothA2DP` açıkken iOS yanıtı gözlüğe A2DP ile çalıyor ama
+    /// mikrofonu **telefondan** alıyordu: telefon cepteyken gözlükten "Junior"
+    /// denince hiçbir şey duyulmuyordu. HFP girişi açıkça seçilince hem
+    /// mikrofon hem hoparlör gözlüğe geçer (ses telefon görüşmesi kalitesinde).
+    private func preferHeadsetMic(_ session: AVAudioSession) {
+        let enabled = (UserDefaults.standard.object(forKey: Self.headsetMicKey) as? Bool) ?? true
+        guard enabled else {
+            if session.preferredInput != nil { try? session.setPreferredInput(nil) }
+            return
+        }
+        guard let headset = session.availableInputs?.first(where: { Self.headsetPorts.contains($0.portType) }),
+              session.preferredInput?.uid != headset.uid else { return }
+        try? session.setPreferredInput(headset)
+    }
+
+    /// Ayar değişince ya da dinleme sürerken gözlük bağlanınca çağrılır. Giriş
+    /// değişirse motor durur; yapılandırma bildirimi onu yeni girişle açar.
+    func preferHeadsetMicIfWanted() {
+        guard wanted else { return }
+        preferHeadsetMic(AVAudioSession.sharedInstance())
+        recover()
     }
 
     /// Yazmayı durdurur ama **mikrofonu bırakmaz**: sıradaki servis devralacak.
