@@ -108,6 +108,10 @@ jobs:
           UDID="$(cat .sim_udid)"
           APP="DerivedSim/Build/Products/Debug-iphonesimulator/Junior.app"
           test -d "$APP" || { echo "Simulator uygulamasi yok"; exit 1; }
+          # Testler uygulamayi normal acip izin sordurdu; o pencere simulatorde
+          # kaliyor ve her goruntuyu kapatiyordu. Temiz bir simulatorle baslanir.
+          xcrun simctl shutdown "$UDID" 2>/dev/null || true
+          xcrun simctl erase "$UDID"
           xcrun simctl boot "$UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$UDID" -b >/dev/null
           xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged \
