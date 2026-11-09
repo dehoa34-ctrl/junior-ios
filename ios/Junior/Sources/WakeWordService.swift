@@ -115,7 +115,9 @@ final class WakeWordService: ObservableObject {
     /// Cihaz ustu tanimanin bu telefonda calisip calismadigi hatirlanir.
     /// Hatirlanmazsa her aciliste once bozuk olan deneniyor ve ilk iki cevrim
     /// bosa gidiyor - "Hey Junior" o sirada hic duyulmuyor.
-    private static let onDeviceBrokenKey = "junior.onDeviceRecognitionBrokenAt"
+    // Anahtar 1.4.0 (10) ile değişti: önceki sürüm ses yolu değişimini de "bozuk"
+    // sayıp bu bayrağı yanlışlıkla koyuyordu; eski kayıt yok sayılır.
+    private static let onDeviceBrokenKey = "junior.onDeviceRecognitionBrokenAt.v2"
     /// Cihaz üstü model sonradan inebilir (Türkçe klavye diktesi açılınca).
     /// Bayrak kalıcı olunca bir daha hiç denenmiyordu; bir gün sonra yeniden dene.
     private static let onDeviceRetryAfter: TimeInterval = 24 * 3600
@@ -252,12 +254,21 @@ final class WakeWordService: ObservableObject {
     private func registerCycleError() {
         guard usingOnDevice, !sawTranscript,
               Date().timeIntervalSince(cycleStarted) < 10 else { return }
+        // Gözlük bağlanırken ses yolu değişiyor ve iOS motoru durduruyor; o an
+        // düşen döngüler cihaz üstü tanımanın bozuk olduğunu göstermez. Önceden
+        // bunlar da sayılıyor, telefon gereksiz yere sunucu tanımasına geçiyordu.
+        guard Date().timeIntervalSince(MicrophoneHub.shared.lastDisruption) > 4 else { return }
         quickSilentFailures += 1
         if quickSilentFailures >= 2 {
             preferOnDevice = false
             // Bir daha denemeyelim: sonraki aciliste dogrudan sunucu tanimasi.
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.onDeviceBrokenKey)
             message = "Cihaz üstü tanıma çalışmadı; sunucu tanımasına geçildi."
+            // Bilgi notu; ekranda kalırsa "dinleniyor · duyulan" satırını gizliyordu.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                if self?.message == "Cihaz üstü tanıma çalışmadı; sunucu tanımasına geçildi." { self?.message = nil }
+            }
         }
     }
 

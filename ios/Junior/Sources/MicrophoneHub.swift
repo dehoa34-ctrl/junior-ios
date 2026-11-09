@@ -129,6 +129,9 @@ final class MicrophoneHub {
     private var engine = AVAudioEngine()
     private let box = RequestBox()
     private(set) var isRunning = false
+    /// Ses yolunun en son değiştiği ya da motorun dışarıdan durduğu an. Hemen
+    /// ardından düşen tanıma oturumları tanımanın değil yolun hatasıdır.
+    private(set) var lastDisruption = Date.distantPast
     /// Mikrofonun açık kalması isteniyor mu. stop() çağrılmadıkça true.
     private var wanted = false
     private var observers: [NSObjectProtocol] = []
@@ -153,12 +156,16 @@ final class MicrophoneHub {
         })
         observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange,
                                              object: nil, queue: .main) { _ in
-            Task { @MainActor in MicrophoneHub.shared.recover() }
+            Task { @MainActor in
+                MicrophoneHub.shared.lastDisruption = Date()
+                MicrophoneHub.shared.recover()
+            }
         })
         observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification,
                                              object: nil, queue: .main) { note in
             let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
             let reason = raw.flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
+            Task { @MainActor in MicrophoneHub.shared.lastDisruption = Date() }
             guard reason == .newDeviceAvailable else { return }
             // Gözlük dinleme sürerken bağlandı: mikrofonu ona geçir.
             Task { @MainActor in MicrophoneHub.shared.preferHeadsetMicIfWanted() }
