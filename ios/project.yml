@@ -8,7 +8,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "1.4.0"
-    CURRENT_PROJECT_VERSION: "8"
+    CURRENT_PROJECT_VERSION: "9"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
@@ -63,12 +63,17 @@ targets:
         # uyutabilir; kilitli telefonda surekli calisma garantisi yoktur.
         UIBackgroundModes:
           - audio
+          # Meta DAT'in arka planda kamera/oturum islerini surdurebilmesi (Codex'in duzeltmesi).
+          - processing
           # DAT gozlukle Bluetooth ve harici aksesuar kanallarindan konusuyor.
           - bluetooth-central
           - bluetooth-peripheral
           - external-accessory
         NSBluetoothAlwaysUsageDescription: Gozlukle baglanti kurmak icin Bluetooth gerekiyor.
+        NSBluetoothPeripheralUsageDescription: Gozlukle baglanti kurmak icin Bluetooth gerekiyor.
         NSLocalNetworkUsageDescription: Gozluk baglantisi yerel agi kullaniyor.
+        NSBonjourServices:
+          - _bonjour._tcp
         # Kayit sirasinda Meta AI uygulamasini acabilmek icin sema sorgusu gerekli.
         LSApplicationQueriesSchemes:
           - fb-viewapp
@@ -79,6 +84,8 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLSchemes:
               - junior
+            CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleTypeRole: Editor
         MWDAT:
           AppLinkURLScheme: junior://
           # Developer Mode'da dogrulama (attestation) yapilmiyor ve resmi ornek
