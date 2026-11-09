@@ -37,7 +37,7 @@ final class GlassesService: ObservableObject {
 
     /// Gozlukten kare beklenecek en uzun sure. Gozluk kamerayi acip (beyaz
     /// isik) kareyi gondermesi birkac saniye surebiliyor.
-    private static let captureTimeout: Double = 20
+    private static let captureTimeout: Double = 15
 
     /// Fotograf dinleyicisinin jetonu. **Saklanmak zorunda**: birakilirsa
     /// abonelik cop toplanip iptal oluyor ve kare hic ulasmiyor. Belirtisi
@@ -47,6 +47,12 @@ final class GlassesService: ObservableObject {
     /// oldugunu bilmezse, erken biten bir cekimin gorevi 12 saniye sonra
     /// uyanip **sonraki** cekimi haksiz yere iptal eder.
     private var photoToken: Any?
+    /// Kamera, akış ve fotoğraf yeteneğinin dinleyici jetonları (kamera ömrü boyunca).
+    private var listenTokens: [Any] = []
+    /// Fotoğraf yeteneği (`Camera.photo`) başladı mı. Bu olmadan istenen kare
+    /// SDK tarafından sessizce reddediliyor.
+    private var photoStarted = false
+    private var photoStartRequested = false
 
     private var captureGeneration = 0
 
@@ -317,15 +323,24 @@ final class GlassesService: ObservableObject {
     func disconnect() async {
         errorTask?.cancel()
         errorTask = nil
-        await camera?.stream.stop()
+        camera?.stream.stop()
         camera = nil
         photoToken = nil
+        listenTokens = []
+        photoStarted = false
+        photoStartRequested = false
         await session?.stop()
         session = nil
         if case .failed = state {} else { state = .idle }
     }
 
     /// İstek anında tek kare alır. Çağıran taraf bunu doğrudan Junior'a gönderir.
+    ///
+    /// SDK 1.0'daki doğru sıra (Meta'nın BirdSpotter örneği): video akışı sensörü
+    /// uyandırır, akış "streaming" olunca fotoğraf yeteneği (`Camera.photo`)
+    /// başlatılır, kare onun üzerinden istenir ve `photoDataPublisher`'a gelir.
+    /// Önceden yalnız akışın eski `capturePhoto(format:)` çağrısı kullanılıyordu;
+    /// gözlüğün ışığı yanıyor ama kare hiç gelmiyordu.
     func capturePhoto() async throws -> Data {
         if session == nil { await connect() }
         guard let session else { throw GlassesError.notConnected }
@@ -334,32 +349,23 @@ final class GlassesService: ObservableObject {
         state = .capturing
         defer { if self.session != nil { state = .ready } }
 
-        // Kamera oturum boyunca bir kez eklenir ve yeniden kullanılır. Her
-        // soruda yeniden eklemek ikinci soruda "kamera zaten var" riskiydi;
-        // yalnız akış durdurulup yeniden başlatılıyor.
-        let camera: Camera
-        if let existing = self.camera {
-            camera = existing
-        } else {
-            let configuration = StreamConfiguration(videoCodec: .raw, resolution: .low, frameRate: 24)
-            guard let added = try await session.addCamera(config: configuration) else {
-                throw GlassesError.cameraUnavailable
-            }
-            camera = added
-            self.camera = added
-            // Jeton kameranın ömrü boyunca tutulur; bırakılırsa abonelik iptal oluyor.
-            photoToken = added.stream.photoDataPublisher.listen { [weak self] photo in
-                Task { @MainActor in await self?.finishCapture(with: photo.data) }
-            }
-        }
-        await camera.stream.start()
+        let camera = try attachCamera(to: session)
+        // Akış yalnız sensörü uyandırmak için; fotoğraf yeteneği başlayınca durdurulur.
+        if !photoStarted { camera.stream.start() }
+        await waitForPhotoStart(seconds: 8)
 
         captureGeneration += 1
         let generation = captureGeneration
+        let usePhoto = photoStarted
 
         return try await withCheckedThrowingContinuation { continuation in
             pendingCapture = continuation
-            Task { [weak self] in await self?.requestFrame(camera, generation: generation) }
+            if usePhoto {
+                camera.photo.capturePhoto(resolution: .medium, quality: .medium)
+            } else {
+                // Fotoğraf yeteneği başlamadıysa eski yol: akıştan kare iste.
+                Task { [weak self] in await self?.requestFrame(camera, generation: generation) }
+            }
             // Gözlük kareyi hiç göndermezse (menzil dışı, pil, uyku) devam
             // noktası asla sürmez ve çağıran taraf sonsuza kadar bekler.
             Task { [weak self] in
@@ -369,15 +375,79 @@ final class GlassesService: ObservableObject {
         }
     }
 
-    /// Kare ister; gözlük kabul etmezse kısa aralıklarla yeniden dener.
+    /// Kamerayı oturum boyunca bir kez ekler ve dinleyicilerini kurar.
     ///
-    /// capturePhoto isteği kabul edip etmediğini döndürüyor (akış henüz
-    /// ısınmadıysa hayır). Dönüş değeri atılıyordu: reddedilen istek için 20
-    /// saniye boşuna beklenip "kare gelmedi" deniyordu.
+    /// Akış "raw" değil HEVC: SDK, uygulama ön planda değilken raw akışı
+    /// duraklatıyor. Telefon cepteyken ya da ekran kapalıyken sorulan "bu ne"
+    /// sorusunda ışık yanıp kare gelmemesinin sebebi buydu. Kareler hiç
+    /// çözülmediği için kodek uygulamaya bir şey kaybettirmiyor.
+    private func attachCamera(to session: DeviceSession) throws -> Camera {
+        if let camera { return camera }
+        let configuration = StreamConfiguration(videoCodec: .hvc1, audioCodec: nil, resolution: .low, frameRate: 7)
+        guard let added = try session.addCamera(config: configuration) else {
+            throw GlassesError.cameraUnavailable
+        }
+        camera = added
+        photoStarted = false
+        photoStartRequested = false
+
+        // Dinleyiciler kare istenmeden ÖNCE kurulur: photoDataPublisher geçmişi
+        // tekrar oynatmıyor, sonradan kurulan dinleyici kareyi kaçırabilir.
+        listenTokens.append(added.stream.statePublisher.listen { [weak self] state in
+            let text = String(describing: state).lowercased()
+            Task { @MainActor in self?.streamStateChanged(text) }
+        })
+        listenTokens.append(added.photo.statePublisher.listen { [weak self] state in
+            let text = String(describing: state).lowercased()
+            Task { @MainActor in self?.photoStateChanged(text) }
+        })
+        listenTokens.append(added.photo.photoDataPublisher.listen { [weak self] photo in
+            let data = photo.imageData
+            Task { @MainActor in await self?.finishCapture(with: data) }
+        })
+        listenTokens.append(added.photo.errorPublisher.listen { [weak self] error in
+            let text = String(describing: error)
+            Task { @MainActor in await self?.failCapture(reason: text) }
+        })
+        // Eski yol (yedek): akışın kendi fotoğraf yayını.
+        photoToken = added.stream.photoDataPublisher.listen { [weak self] photo in
+            Task { @MainActor in await self?.finishCapture(with: photo.data) }
+        }
+        return added
+    }
+
+    private func streamStateChanged(_ text: String) {
+        // Sensör uyandı: fotoğraf yeteneği artık başlatılabilir (bir kez).
+        guard text.hasSuffix("streaming"), !photoStartRequested, let camera else { return }
+        photoStartRequested = true
+        camera.photo.start()
+    }
+
+    private func photoStateChanged(_ text: String) {
+        if text.hasSuffix("started") {
+            photoStarted = true
+            // Kareler işini yaptı; akış durur ki fotoğraf sensörde yalnız kalsın
+            // ve gözlük pili boşa gitmesin.
+            camera?.stream.stop()
+        } else if text.hasSuffix("stopped") || text.hasSuffix("stopping") {
+            photoStarted = false
+            photoStartRequested = false
+        }
+    }
+
+    /// Fotoğraf yeteneği başlayana kadar bekler (en fazla `seconds`).
+    private func waitForPhotoStart(seconds: Double) async {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !photoStarted, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    /// Kare ister; gözlük kabul etmezse kısa aralıklarla yeniden dener (eski yol).
     private func requestFrame(_ camera: Camera, generation: Int) async {
         for attempt in 0..<8 {
             guard generation == captureGeneration, pendingCapture != nil else { return }
-            let outcome = await camera.stream.capturePhoto(format: .jpeg)
+            let outcome = camera.stream.capturePhoto(format: .jpeg)
             // Belgelerde Bool; başka bir tip dönerse kabul edilmiş sayılır.
             if (outcome as Any) as? Bool ?? true { return }
             if attempt < 7 { try? await Task.sleep(nanoseconds: 500_000_000) }
@@ -391,8 +461,7 @@ final class GlassesService: ObservableObject {
     /// sıradaki çekimi iptal etmesini engeller.
     ///
     /// Kare gelmediyse ya da reddedildiyse oturum tamamen bırakılır: bir sonraki
-    /// soru temiz bir oturumla başlasın. Uykuya dalmış oturum ya da yarım kalmış
-    /// kamera üzerine yeniden denemek aynı hatayı tekrarlıyordu.
+    /// soru temiz bir oturumla başlasın.
     private func failCaptureIfPending(generation: Int, error: GlassesError = .timedOut) async {
         guard generation == captureGeneration, let continuation = pendingCapture else { return }
         pendingCapture = nil
@@ -400,22 +469,28 @@ final class GlassesService: ObservableObject {
         continuation.resume(throwing: error)
     }
 
-    private func finishCapture(with data: Data) async {
+    /// Fotoğraf yeteneği hata bildirdi: zaman aşımını beklemeden sebebiyle bitir.
+    private func failCapture(reason: String) async {
         guard let continuation = pendingCapture else { return }
         pendingCapture = nil
-        // Kare alındı: akışı durdur (gözlük ışığı sönsün, pil gitmesin) ama
-        // kamerayı bırakma; sonraki soruda yeniden eklemek gerekmesin.
-        await camera?.stream.stop()
+        await disconnect()
+        continuation.resume(throwing: GlassesError.captureFailed(reason))
+    }
+
+    private func finishCapture(with data: Data) async {
+        guard let continuation = pendingCapture, !data.isEmpty else { return }
+        pendingCapture = nil
         continuation.resume(returning: data)
     }
 }
 
-enum GlassesError: LocalizedError {
+enum GlassesError: LocalizedError, Equatable {
     case notConnected
     case busy
     case cameraUnavailable
     case timedOut
     case rejected
+    case captureFailed(String)
     case permissionTimedOut
     case permissionDenied
 
@@ -431,6 +506,8 @@ enum GlassesError: LocalizedError {
             return "Gözlükten kare gelmedi. Menzil dışında ya da pili bitmiş olabilir."
         case .rejected:
             return "Gözlük kare vermedi. Gözlüğü uyandırıp tekrar sor."
+        case .captureFailed(let reason):
+            return "Gözlük fotoğrafı çekemedi: \(reason)"
         case .permissionTimedOut:
             return "Meta AI'dan yanıt gelmedi. Meta AI açıldıysa izin ekranında \"İzin ver\"e bas ve Junior'a geri dön; açılmadıysa Meta AI'ı bir kez açıp kapat ve tekrar dene."
         case .permissionDenied:
