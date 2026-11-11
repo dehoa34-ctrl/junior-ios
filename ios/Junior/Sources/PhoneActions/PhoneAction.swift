@@ -49,6 +49,10 @@ enum PhoneAction: Equatable {
         switch name {
         case "reminder":
             guard let title = text("title", max: 200) else { return nil }
+            // Göreli söylenişte ("10 dakika sonra") `in_seconds` tam süreyi verir; saat dilimi farkından etkilenmez.
+            if let relative = integer("in_seconds"), relative > 0 {
+                return .reminder(title: title, due: Date().addingTimeInterval(TimeInterval(relative)))
+            }
             return .reminder(title: title, due: date("due", epoch: "due_epoch"))
         case "event":
             guard let title = text("title", max: 200), let start = date("start", epoch: "start_epoch") else { return nil }

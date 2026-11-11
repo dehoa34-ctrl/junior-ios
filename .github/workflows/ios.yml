@@ -127,6 +127,11 @@ jobs:
             xcrun simctl io "$UDID" screenshot "shots/$scene.png"
           done
           ls -l shots
+          echo "===== Cokme raporlari ====="
+          ls -t ~/Library/Logs/DiagnosticReports 2>/dev/null | head -5 || true
+          for f in $(ls -t ~/Library/Logs/DiagnosticReports/Junior* 2>/dev/null | head -1); do
+            grep -oE '"(symbol|exception|type|signal|termination)"[^,]*' "$f" | head -40 || true
+          done
 
       - name: Ekran goruntulerini yukle
         if: always()

@@ -20,6 +20,12 @@ final class PhoneActionParseTests: XCTestCase {
         XCTAssertNil(parse("reminder", ["title": "   "]))
     }
 
+    func testRelativeReminderUsesInSeconds() throws {
+        let action = try XCTUnwrap(parse("reminder", ["title": "su iç", "due": "2020-01-01T00:00:00", "in_seconds": 600]))
+        guard case .reminder(_, let due) = action else { return XCTFail("hatırlatıcı bekleniyordu") }
+        XCTAssertEqual(try XCTUnwrap(due).timeIntervalSinceNow, 600, accuracy: 5)
+    }
+
     func testEpochIsUsedWhenLocalStringMissing() throws {
         let action = try XCTUnwrap(parse("reminder", ["title": "x", "due_epoch": 1_800_000_000]))
         XCTAssertEqual(action, .reminder(title: "x", due: Date(timeIntervalSince1970: 1_800_000_000)))
