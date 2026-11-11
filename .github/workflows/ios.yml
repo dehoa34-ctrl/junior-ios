@@ -120,7 +120,7 @@ jobs:
             --batteryLevel 100 --cellularBars 4 --wifiBars 3 || true
           xcrun simctl install "$UDID" "$APP"
           mkdir -p shots
-          for scene in empty chat listening settings; do
+          for scene in empty chat listening settings live; do
             xcrun simctl terminate "$UDID" xyz.jrbilge.junior 2>/dev/null || true
             xcrun simctl launch "$UDID" xyz.jrbilge.junior -JuniorDemo "$scene"
             sleep 7

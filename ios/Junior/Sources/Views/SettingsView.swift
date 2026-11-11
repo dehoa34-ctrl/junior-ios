@@ -4,6 +4,7 @@ struct SettingsView: View {
     @ObservedObject var config: Config
     @ObservedObject var store: ConversationStore
     @ObservedObject var glasses: GlassesService
+    @ObservedObject var live: LiveListenService
     @Environment(\.dismiss) private var dismiss
 
     @State private var tokenDraft = ""
@@ -12,6 +13,7 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
+            ScrollViewReader { proxy in
             Form {
                 Section {
                     HStack(spacing: 14) {
@@ -100,6 +102,8 @@ struct SettingsView: View {
                          + "ulaşılamazsa iPhone'un kendi tanıması kullanılır.")
                 }
 
+                LiveSettingsSection(config: config, live: live)
+
                 Section {
                     Toggle(isOn: $config.naturalVoiceEnabled) {
                         Label { Text("Doğal ses (sunucudan)") } icon: { SettingIcon(systemName: "speaker.wave.2.fill", color: JuniorTheme.orange) }
@@ -170,6 +174,17 @@ struct SettingsView: View {
             }
             .scrollContentBackground(.hidden)
             .background(AmbientBackground(tint: JuniorTheme.cyan.opacity(0.5)))
+            #if DEBUG
+            // CI ekran görüntüsü: sürekli dinleme bölümüne kaydır.
+            .onAppear {
+                if DemoMode.scene == "live" {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        proxy.scrollTo("liveSection", anchor: .top)
+                    }
+                }
+            }
+            #endif
+            }
             .navigationTitle("Ayarlar")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -12,6 +12,7 @@ final class Config: ObservableObject {
         static let naturalVoice = "junior.naturalVoice"
         static let continuous = "junior.continuousConversation"
         static let serverRecognition = "junior.serverRecognition"
+        static let phoneLive = "junior.phoneLive"
         static let tokenAccessMigrated = "junior.tokenAccessAfterFirstUnlock"
     }
 
@@ -78,6 +79,12 @@ final class Config: ObservableObject {
         didSet { UserDefaults.standard.set(serverRecognitionEnabled, forKey: Keys.serverRecognition) }
     }
 
+    /// Telefonda sürekli dinle: konuşma parçaları kesilip bilgisayara yüklenir ve
+    /// orada yazıya çevrilir. Kullanıcı açıkça açmadıkça kapalıdır.
+    @Published var phoneLiveEnabled: Bool {
+        didSet { UserDefaults.standard.set(phoneLiveEnabled, forKey: Keys.phoneLive) }
+    }
+
     init() {
         // Varsayilan yok: adres kisiye ozel. Bos birakilinca uygulama
         // "sunucu adresi eksik" uyarisini gosterip Ayarlar'a goturuyor.
@@ -98,6 +105,7 @@ final class Config: ObservableObject {
         continuousEnabled = (UserDefaults.standard.object(forKey: Keys.continuous) as? Bool) ?? true
         headsetMicEnabled = (UserDefaults.standard.object(forKey: MicrophoneHub.headsetMicKey) as? Bool) ?? true
         serverRecognitionEnabled = (UserDefaults.standard.object(forKey: Keys.serverRecognition) as? Bool) ?? true
+        phoneLiveEnabled = (UserDefaults.standard.object(forKey: Keys.phoneLive) as? Bool) ?? false
         liveActivityEnabled = (UserDefaults.standard.object(forKey: JuniorLiveActivity.enabledKey) as? Bool) ?? true
         #if DEBUG
         DemoMode.prepare(self)

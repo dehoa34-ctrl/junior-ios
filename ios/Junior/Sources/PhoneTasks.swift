@@ -145,8 +145,20 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        if let raw = response.notification.request.content.userInfo["url"] as? String, let url = URL(string: raw) {
+        let info = response.notification.request.content.userInfo
+        if let raw = info["url"] as? String, let url = URL(string: raw) {
             DispatchQueue.main.async { UIApplication.shared.open(url) }
+        }
+        // Telefon cepteyken bırakılan eylem (arama, Spotify, el feneri …): dokununca yapılır.
+        if info["phoneAction"] is String {
+            let raw = info["phoneAction"] as? String
+            let retry = info["retryText"] as? String
+            Task { @MainActor in
+                var copy: [AnyHashable: Any] = [:]
+                if let raw { copy["phoneAction"] = raw }
+                if let retry { copy["retryText"] = retry }
+                PhoneActionService.shared.handleNotification(userInfo: copy)
+            }
         }
         completionHandler()
     }

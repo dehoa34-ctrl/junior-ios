@@ -41,11 +41,22 @@ final class ConversationStore: ObservableObject {
     private let speech: SpeechService
     private let archive: ConversationArchive
 
-    init(config: Config, speech: SpeechService, archive: ConversationArchive = ConversationArchive()) {
+    private let phoneActions: PhoneActionService
+    private var retryTask: Task<Void, Never>?
+
+    init(config: Config, speech: SpeechService, archive: ConversationArchive = ConversationArchive(),
+         phoneActions: PhoneActionService = .shared) {
         self.config = config
         self.speech = speech
         self.archive = archive
+        self.phoneActions = phoneActions
         messages = archive.load()
+        // Telefon cepteyken bırakılan bildirime dokunulunca eylem yapılır; sonucu burada söylenir.
+        phoneActions.onFollowUp = { [weak self] message, retryText in
+            guard let self else { return }
+            if let message { self.announce(message) }
+            if let retryText { self.retryAfterLaunch(retryText) }
+        }
     }
 
     var canSend: Bool { config.hasToken && config.url(path: "/v1/command") != nil }
@@ -104,14 +115,21 @@ final class ConversationStore: ObservableObject {
             do {
                 let response = try await client.send(url: url, token: token, message: trimmed,
                                                      history: history, image: imageData, target: target)
-                messages.append(ChatMessage(role: .assistant, text: response.reply))
+                var reply = response.reply
+                var chunks = response.speech
+                // Sunucu işi telefona bıraktı: önce yap, sonucu (izin yok, bildirim bırakıldı …) söyle.
+                if response.status == .phoneAction, let spoken = await runPhoneAction(response, userText: trimmed) {
+                    reply = spoken
+                    chunks = []
+                }
+                messages.append(ChatMessage(role: .assistant, text: reply))
                 if response.status == .needsTarget { pendingTargetQuestion = trimmed }
                 archive.save(messages)
                 // Once dongu haber alsin: seslendirme baslamadan uyandirma
                 // dinlemesi duraklatilmali, yoksa Junior kendi sesindeki
                 // "Junior" kelimesini duyar.
                 onTurnEnded?(nil)
-                speech.speak(response.reply, chunks: response.speech)
+                speech.speak(reply, chunks: chunks)
             } catch {
                 let description = (error as? JuniorError)?.localizedDescription ?? error.localizedDescription
                 errorText = description
@@ -122,6 +140,58 @@ final class ConversationStore: ObservableObject {
                 onTurnEnded?(description)
             }
         }
+    }
+
+    // MARK: - Telefon eylemleri
+
+    /// Eylemi yürütür. Dönüş: sunucunun cümlesinin yerine söylenecek metin; `nil` ise sunucunun cümlesi kalır.
+    private func runPhoneAction(_ response: CommandResponse, userText: String) async -> String? {
+        guard let action = response.phoneAction, let payload = response.phoneActionPayload else {
+            return "Bunu telefonda nasıl yapacağımı anlayamadım."
+        }
+        let result = await phoneActions.perform(action, payload: payload, retryText: userText)
+        if result.kind == .needsRetry { retryAfterLaunch(userText) }
+        return result.message
+    }
+
+    /// Spotify açıldıktan sonra aynı komut bir kez daha gönderilir: sunucu artık çalan cihazı bulur.
+    /// İkinci kez de telefona bırakılırsa döngüye girmez, durumu söyler.
+    func retryAfterLaunch(_ text: String) {
+        retryTask?.cancel()
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 4_500_000_000)
+            guard let self, !Task.isCancelled else { return }
+            await self.resend(text)
+        }
+    }
+
+    private func resend(_ text: String) async {
+        // Önceki tur bitsin, kendi yanıtını okuyup bitirsin.
+        for _ in 0..<40 where isSending || speech.state == .speaking {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        guard let url = config.url(path: "/v1/command"), let token = config.token else { return }
+        do {
+            let response = try await client.send(url: url, token: token, message: text,
+                                                 history: [], image: nil, target: nil)
+            if response.status == .phoneAction {
+                announce("Spotify açıldı ama çalamadım. Spotify'da bir şarkıyı bir kez elle başlatıp tekrar söyle.")
+            } else {
+                announce(response.reply, chunks: response.speech)
+            }
+        } catch {
+            let description = (error as? JuniorError)?.localizedDescription ?? error.localizedDescription
+            announce("Spotify açıldı ama komutu yeniden gönderemedim. \(description)")
+        }
+    }
+
+    /// Sohbete bir Junior cümlesi ekler ve sesli okur (kullanıcı mesajı olmadan).
+    private func announce(_ text: String, chunks: [String] = []) {
+        messages.append(ChatMessage(role: .assistant, text: text))
+        archive.save(messages)
+        // Uyandırma dinlemesi duraksasın: Junior kendi sesindeki "Junior"u duymasın.
+        onTurnEnded?(nil)
+        speech.speak(text, chunks: chunks)
     }
 
     // MARK: - Video: telefondan sec, bilgisayarda kurgulat

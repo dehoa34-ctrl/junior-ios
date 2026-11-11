@@ -32,6 +32,8 @@ enum CommandStatus: Equatable {
     case setupRequired
     case notCompleted
     case outcomeUnknown
+    /// Sunucu işi telefona bıraktı (hatırlatıcı, arama, zamanlayıcı …): `phone_action`.
+    case phoneAction
     case other(String)
 
     init(raw: String?) {
@@ -43,6 +45,7 @@ enum CommandStatus: Equatable {
         case "setup_required": self = .setupRequired
         case "not_completed": self = .notCompleted
         case "outcome_unknown": self = .outcomeUnknown
+        case "phone_action": self = .phoneAction
         case let value?: self = .other(value)
         }
     }
@@ -54,6 +57,9 @@ struct CommandResponse {
     let errorCode: String?
     /// Sunucunun bölüp önden seslendirmeye başladığı parçalar; boşsa uygulama kendisi böler.
     var speech: [String] = []
+    /// `status == .phoneAction` iken telefonun yapacağı iş (ve bildirime konacak ham hali).
+    var phoneAction: PhoneAction?
+    var phoneActionPayload: [String: Any]?
 }
 
 enum JuniorError: LocalizedError {
@@ -130,10 +136,16 @@ actor JuniorClient {
         let reply = parsed["reply"] as? String ?? ""
         let error = parsed["error"] as? [String: Any]
         let speech = (parsed["speech"] as? [Any])?.compactMap { $0 as? String }.filter { !$0.isEmpty } ?? []
-        return CommandResponse(reply: reply.isEmpty ? "Junior bos yanit dondurdu." : reply,
-                               status: CommandStatus(raw: parsed["status"] as? String),
-                               errorCode: error?["code"] as? String,
-                               speech: reply.isEmpty ? [] : speech)
+        let status = CommandStatus(raw: parsed["status"] as? String)
+        var response = CommandResponse(reply: reply.isEmpty ? "Junior bos yanit dondurdu." : reply,
+                                       status: status,
+                                       errorCode: error?["code"] as? String,
+                                       speech: reply.isEmpty ? [] : speech)
+        if status == .phoneAction, let payload = parsed["phone_action"] as? [String: Any] {
+            response.phoneActionPayload = payload
+            response.phoneAction = PhoneAction.parse(payload)
+        }
+        return response
     }
 
     /// Sunucu ayakta mi. Token istemez ve hizli doner; konusmadan **once**
@@ -203,6 +215,14 @@ actor JuniorClient {
         let (data, response) = try await perform(request)
         try check(response: response, data: data)
         return PhoneTask.parse(data)
+    }
+
+    /// Sürekli dinlemeden bir konuşma parçası yükler (gövde dosyadan akar, belleğe alınmaz).
+    /// Dönüş: HTTP durum kodu; ağ hatasında nil.
+    func uploadFile(_ request: URLRequest, file: URL) async -> Int? {
+        guard let (_, response) = try? await session.upload(for: request, fromFile: file),
+              let http = response as? HTTPURLResponse else { return nil }
+        return http.statusCode
     }
 
     /// Sunucu yalniz tamamlanmis user/assistant ciftlerini kabul eder.

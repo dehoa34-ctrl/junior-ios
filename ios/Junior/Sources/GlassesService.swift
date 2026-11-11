@@ -341,7 +341,28 @@ final class GlassesService: ObservableObject {
     /// başlatılır, kare onun üzerinden istenir ve `photoDataPublisher`'a gelir.
     /// Önceden yalnız akışın eski `capturePhoto(format:)` çağrısı kullanılıyordu;
     /// gözlüğün ışığı yanıyor ama kare hiç gelmiyordu.
+    ///
+    /// Birleştirme notu (Codex dalı ile): Codex akış açıkken `Camera.photo` çakışıyor diye
+    /// yalnız akış yoluna dönmüştü. Meta'nın resmî örneği (BirdSpotter) tersini yapıyor:
+    /// akış sensörü uyandırır, fotoğraf yeteneği başlayınca akış **kapatılır** (kare ve
+    /// fotoğraf aynı sensörü paylaşamaz), sonra fotoğraf istenir. Burada o sıra korunur;
+    /// Codex'in akış yolu zaten yedek olarak aşağıda duruyor. Geçici bir hata olursa
+    /// oturum sıfırlanıp bir kez daha denenir.
     func capturePhoto() async throws -> Data {
+        do {
+            return try await captureOnce()
+        } catch let error as GlassesError {
+            switch error {
+            case .captureFailed, .rejected:
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                return try await captureOnce()
+            default:
+                throw error
+            }
+        }
+    }
+
+    private func captureOnce() async throws -> Data {
         if session == nil { await connect() }
         guard let session else { throw GlassesError.notConnected }
         guard pendingCapture == nil else { throw GlassesError.busy }
@@ -353,6 +374,9 @@ final class GlassesService: ObservableObject {
         // Akış yalnız sensörü uyandırmak için; fotoğraf yeteneği başlayınca durdurulur.
         if !photoStarted { camera.stream.start() }
         await waitForPhotoStart(seconds: 8)
+        // Akış kapanırken sensörü bir an daha tutar; ondan önce istenen fotoğraf
+        // ~100 ms'de ve tek bayt gelmeden reddediliyor (Meta örneğindeki not).
+        if photoStarted { await waitForStreamStopped(seconds: 2) }
 
         captureGeneration += 1
         let generation = captureGeneration
@@ -440,6 +464,17 @@ final class GlassesService: ObservableObject {
         let deadline = Date().addingTimeInterval(seconds)
         while !photoStarted, Date() < deadline {
             try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    /// Akış tamamen durana kadar bekler (en fazla `seconds`).
+    private func waitForStreamStopped(seconds: Double) async {
+        guard let camera else { return }
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            let text = String(describing: camera.stream.state).lowercased()
+            if text.hasSuffix("stopped") { return }
+            try? await Task.sleep(nanoseconds: 50_000_000)
         }
     }
 

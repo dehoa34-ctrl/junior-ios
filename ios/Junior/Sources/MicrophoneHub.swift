@@ -12,6 +12,7 @@ final class RequestBox: @unchecked Sendable {
     private let lock = NSLock()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var capture: PCMCapture?
+    private var live: LiveTap?
 
     func set(_ value: SFSpeechAudioBufferRecognitionRequest?, capture: PCMCapture? = nil) {
         lock.lock(); defer { lock.unlock() }
@@ -19,13 +20,21 @@ final class RequestBox: @unchecked Sendable {
         self.capture = capture
     }
 
+    /// Sürekli dinleme tüketicisi; tanıma isteğinden bağımsızdır (`set` ona dokunmaz).
+    func setLive(_ value: LiveTap?) {
+        lock.lock(); defer { lock.unlock() }
+        live = value
+    }
+
     func append(_ buffer: AVAudioPCMBuffer) {
         lock.lock()
         let current = request
         let copy = capture
+        let tap = live
         lock.unlock()
         current?.append(buffer)
         copy?.append(buffer)
+        tap?.append(buffer)
     }
 }
 
@@ -134,6 +143,9 @@ final class MicrophoneHub {
     private(set) var lastDisruption = Date.distantPast
     /// Mikrofonun açık kalması isteniyor mu. stop() çağrılmadıkça true.
     private var wanted = false
+    /// Telefonda sürekli dinleme açık mı. Açıkken motor, uyandırma ve konuşma
+    /// tanıma bıraksa bile kapanmaz; yalnız kullanıcı kapatınca/duraklatınca kapanır.
+    private var liveWanted = false
     private var observers: [NSObjectProtocol] = []
     private var retryTask: Task<Void, Never>?
 
@@ -144,7 +156,7 @@ final class MicrophoneHub {
 
     /// Mikrofon bir servis tarafından tutuluyor mu (o an motor durmuş olsa bile).
     /// Seslendirme bunu sorar: tutulurken ses kategorisi değiştirilmemeli.
-    var isWanted: Bool { wanted }
+    var isWanted: Bool { wanted || liveWanted }
 
     private init() {
         let center = NotificationCenter.default
@@ -179,12 +191,15 @@ final class MicrophoneHub {
     /// Ses oturumunu ve motoru başlatır; zaten gerçekten çalışıyorsa dokunmaz.
     func start() throws {
         wanted = true
+        try startEngine()
+    }
+
+    private func startEngine() throws {
         // Bayrak tek başına yetmez: dış bir olay motoru durdurmuş olabilir.
         guard !(isRunning && engine.isRunning) else { return }
         let session = AVAudioSession.sharedInstance()
         // allowBluetooth = HFP; gözlük mikrofonunun yönlendirilebilmesi için gerekli.
-        try session.setCategory(.playAndRecord, mode: .spokenAudio,
-                                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
+        try session.setCategory(.playAndRecord, mode: .spokenAudio, options: categoryOptions)
         try session.setActive(true, options: .notifyOthersOnDeactivation)
         preferHeadsetMic(session)
 
@@ -230,7 +245,7 @@ final class MicrophoneHub {
     /// Ayar değişince ya da dinleme sürerken gözlük bağlanınca çağrılır. Giriş
     /// değişirse motor durur; yapılandırma bildirimi onu yeni girişle açar.
     func preferHeadsetMicIfWanted() {
-        guard wanted else { return }
+        guard isWanted else { return }
         preferHeadsetMic(AVAudioSession.sharedInstance())
         recover()
     }
@@ -246,10 +261,58 @@ final class MicrophoneHub {
         wanted = false
         retryTask?.cancel()
         box.set(nil)
+        // Sürekli dinleme açıksa mikrofon bırakılmaz; yalnız tanıma bırakıldı.
+        guard !liveWanted else {
+            recover()
+            return
+        }
+        stopEngine()
+    }
+
+    private func stopEngine() {
         engine.inputNode.removeTap(onBus: 0)
         if engine.isRunning { engine.stop() }
         isRunning = false
         // Oturumu pasifleştirmiyoruz: seslendirme aynı oturumdan çalıyor.
+    }
+
+    /// Oturum seçenekleri. Sürekli dinleme açıkken `.mixWithOthers` eklenir: başka
+    /// uygulama (Spotify, Apple Music) çalmaya başlayınca bizim oturum kesilmez
+    /// ve mikrofon müzik çalarken de açık kalır. Kapalıyken eski davranış korunur.
+    private var categoryOptions: AVAudioSession.CategoryOptions {
+        var options: AVAudioSession.CategoryOptions = [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
+        if liveWanted { options.insert(.mixWithOthers) }
+        return options
+    }
+
+    /// Sürekli dinlemeyi bu tüketiciyle açar. Motor zaten çalışıyorsa kapatılmaz:
+    /// yalnız oturum seçenekleri yerinde güncellenir.
+    func enableLive(_ tap: LiveTap) throws {
+        liveWanted = true
+        box.setLive(tap)
+        if isRunning, engine.isRunning {
+            try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .spokenAudio, options: categoryOptions)
+            return
+        }
+        do {
+            try startEngine()
+        } catch {
+            // Yol değişiyor olabilir; motor kendini toparlasın.
+            recover()
+            throw error
+        }
+    }
+
+    /// Sürekli dinlemeyi bırakır. Uyandırma/konuşma mikrofonu hâlâ istiyorsa motor açık kalır.
+    func disableLive() {
+        liveWanted = false
+        box.setLive(nil)
+        guard !wanted else {
+            try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .spokenAudio, options: categoryOptions)
+            return
+        }
+        retryTask?.cancel()
+        stopEngine()
     }
 
     private func handleInterruption(began: Bool) {
@@ -271,11 +334,11 @@ final class MicrophoneHub {
     /// Dışarıdan durdurulan motoru, istendiği sürece yeniden açar. Kesinti
     /// bittikten hemen sonra oturum açılamayabiliyor; birkaç kez tekrar denenir.
     private func recover(attempt: Int = 0) {
-        guard wanted, !engine.isRunning else { return }
+        guard isWanted, !engine.isRunning else { return }
         isRunning = false
         retryTask?.cancel()
         do {
-            try start()
+            try startEngine()
         } catch {
             guard attempt < 5 else { return }
             retryTask = Task { [weak self] in

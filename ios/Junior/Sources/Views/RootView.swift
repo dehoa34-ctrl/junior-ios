@@ -23,6 +23,8 @@ struct RootView: View {
     @StateObject private var server: ServerMonitor
     /// Bilgisayardan telefona gonderilen notlar, baglantilar, hatirlaticilar
     @StateObject private var phoneTasks: PhoneTaskService
+    /// Telefonda sürekli dinleme: konuşma parçaları kesilip bilgisayara yüklenir.
+    @StateObject private var live: LiveListenService
     @Environment(\.scenePhase) private var scenePhase
 
     init(config: Config, speech: SpeechService) {
@@ -47,6 +49,7 @@ struct RootView: View {
             healthURL: { [weak config] in config?.url(path: "/health") },
             probe: demo ? { (_: URL) async -> Bool in true } : nil))
         _phoneTasks = StateObject(wrappedValue: PhoneTaskService(config: config))
+        _live = StateObject(wrappedValue: LiveListenService(config: config, speech: speech))
     }
 
     var body: some View {
@@ -60,7 +63,7 @@ struct RootView: View {
         }
         .preferredColorScheme(.dark)
         .tint(JuniorTheme.cyan)
-        .sheet(isPresented: $showSettings) { SettingsView(config: config, store: store, glasses: glasses) }
+        .sheet(isPresented: $showSettings) { SettingsView(config: config, store: store, glasses: glasses, live: live) }
         .onAppear {
             #if DEBUG
             if let scene = DemoMode.scene {
@@ -75,6 +78,7 @@ struct RootView: View {
             server.check()
             phoneTasks.start()
             store.resumeVideoJob()
+            live.sync()
         }
         // One donunce yeniden bak: bilgisayar bu arada kapanmis olabilir.
         // Arka planda yeniden deneme dongusu durur; cepteyken aga cikmasin.
@@ -83,6 +87,7 @@ struct RootView: View {
                 server.check()
                 phoneTasks.start()
                 store.resumeVideoJob()
+                live.sync()
             } else if scenePhase == .background {
                 server.pause()
                 phoneTasks.pause()
@@ -92,6 +97,7 @@ struct RootView: View {
             handsFree.continuousEnabled = config.continuousEnabled
         }
         .onChange(of: config.wakeWordEnabled) { syncWakeWord() }
+        .onChange(of: config.phoneLiveEnabled) { live.sync() }
         .onChange(of: config.serverRecognitionEnabled) { wireRecognition() }
         // Ayarlar kapaninca yeni adresle hemen bakilir; yoksa uyari eski
         // (bos) adresin sonucunu gosterip "Yeniden dene"yi bekliyordu.
@@ -173,6 +179,7 @@ struct RootView: View {
                 headerStatus
             }
             Spacer()
+            LiveIndicator(live: live)
             CircleIconButton(systemName: "square.and.pencil", label: "Yeni sohbet") { store.clear() }
                 .disabled(store.messages.isEmpty)
                 .opacity(store.messages.isEmpty ? 0.4 : 1)
@@ -589,6 +596,10 @@ struct RootView: View {
         if scene != "empty" { store.loadDemo(DemoMode.messages) }
         if scene == "listening" { speech.showDemoListening("Yarın sabah dokuzda toplantımı hatırlat") }
         if scene == "settings" { showSettings = true }
+        if scene == "live" {
+            live.loadDemo()
+            showSettings = true
+        }
     }
     #endif
 }
@@ -885,6 +896,7 @@ enum DemoMode {
         guard scene != nil else { return }
         config.baseURL = "https://junior.example.com"
         if !config.hasToken { config.setToken(String(repeating: "d", count: 40)) }
+        config.phoneLiveEnabled = scene == "live"
     }
 
     static let messages = [

@@ -121,6 +121,7 @@ final class CommandStatusTests: XCTestCase {
         XCTAssertEqual(CommandStatus(raw: "needs_image"), .needsImage)
         XCTAssertEqual(CommandStatus(raw: "setup_required"), .setupRequired)
         XCTAssertEqual(CommandStatus(raw: "outcome_unknown"), .outcomeUnknown)
+        XCTAssertEqual(CommandStatus(raw: "phone_action"), .phoneAction)
     }
 
     func testUnknownStatusIsPreservedNotSwallowed() {

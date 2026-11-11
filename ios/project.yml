@@ -8,7 +8,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "1.4.0"
-    CURRENT_PROJECT_VERSION: "11"
+    CURRENT_PROJECT_VERSION: "12"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
@@ -53,6 +53,13 @@ targets:
         NSCameraUsageDescription: "\"Bu ne\" gibi sorularda gonderdigin fotografi cekmek icin kamera gerekiyor."
         NSPhotoLibraryUsageDescription: Var olan bir fotografi Junior'a sormak icin galeri erisimi gerekiyor.
         NSPhotoLibraryAddUsageDescription: Junior'in bilgisayarda kurguladigi videoyu Fotograflar'a kaydetmek icin gerekiyor.
+        # Telefon eylemleri: "annemi ara", "yarin 9'a hatirlat", "takvime ekle", "Apple Muzik'te cal".
+        NSContactsUsageDescription: "\"Ali'yi ara\" gibi isteklerde kisiyi rehberinde bulmak icin gerekiyor."
+        NSRemindersFullAccessUsageDescription: Hatirlatici eklemek icin Hatirlaticilar erisimi gerekiyor.
+        NSRemindersUsageDescription: Hatirlatici eklemek icin Hatirlaticilar erisimi gerekiyor.
+        NSCalendarsFullAccessUsageDescription: Takvime etkinlik eklemek icin Takvim erisimi gerekiyor.
+        NSCalendarsUsageDescription: Takvime etkinlik eklemek icin Takvim erisimi gerekiyor.
+        NSAppleMusicUsageDescription: Apple Muzik kitapligindaki sarkilari calmak icin gerekiyor.
         # Kurgulanan videolar Dosyalar uygulamasinda da gorunsun (Junior klasoru).
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
@@ -77,6 +84,9 @@ targets:
         # Kayit sirasinda Meta AI uygulamasini acabilmek icin sema sorgusu gerekli.
         LSApplicationQueriesSchemes:
           - fb-viewapp
+          # Telefon eylemleri: Spotify yuklu mu, WhatsApp acilabilir mi diye bakmak icin.
+          - spotify
+          - whatsapp
         # Gozluk harici aksesuar protokolu uzerinden veri tasiyor.
         UISupportedExternalAccessoryProtocols:
           - com.meta.ar.wearable
