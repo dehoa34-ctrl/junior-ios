@@ -60,14 +60,26 @@ final class GlassesService: ObservableObject {
 
     /// Uygulama acilisinda bir kez cagrilir.
     static func configureOnLaunch() {
-        Task {
+        configuration = Task { () -> Bool in
             do {
                 try await Wearables.configure()
+                return true
             } catch {
                 // Yapilandirma basarisizsa gozluk ozelligi kapali kalir; uygulamanin
                 // geri kalani (sohbet, Spotify, medya tuslari) etkilenmez.
+                return false
             }
         }
+    }
+
+    private static var configuration: Task<Bool, Never>?
+
+    /// SDK yapılandırması bitene kadar bekler. `configure()` bitmeden `Wearables.shared`
+    /// okunursa SDK uygulamayı çökertiyor (Ayarlar açılışta hemen açılınca olabiliyordu).
+    /// Yapılandırma başarısızsa `false`; çağıran gözlüğe hiç dokunmaz.
+    static func sdkReady() async -> Bool {
+        guard let configuration else { return false }
+        return await configuration.value
     }
 
     /// Meta AI uygulamasina gidip uygulamayi kaydeder. Kullanici bir kez yapar.
@@ -76,6 +88,10 @@ final class GlassesService: ObservableObject {
     /// tamamlanmaz. Ilk surumde eksik olan buydu: dugme de yoktu, URL de
     /// islenmiyor idi, yani kamera oturumu hicbir zaman kurulamazdi.
     func register() async {
+        guard await Self.sdkReady() else {
+            state = .failed("Gözlük köprüsü başlatılamadı.")
+            return
+        }
         do {
             try await Wearables.shared.startRegistration()
         } catch {
@@ -131,6 +147,7 @@ final class GlassesService: ObservableObject {
     /// buraya hiç gelmez (JuniorApp ayırıyor).
     static func handleCallback(_ url: URL) {
         Task {
+            guard await sdkReady() else { return }
             do {
                 _ = try await Wearables.shared.handleUrl(url)
             } catch {
@@ -147,6 +164,10 @@ final class GlassesService: ObservableObject {
         guard !observingRegistration else { return }
         observingRegistration = true
         Task { [weak self] in
+            guard await Self.sdkReady() else {
+                self?.observingRegistration = false
+                return
+            }
             for await status in Wearables.shared.registrationStateStream() {
                 let text = Self.describe(status)
                 await MainActor.run { self?.registrationInfo = text }
@@ -161,6 +182,10 @@ final class GlassesService: ObservableObject {
         // hepsi ayni genel mesaji veriyordu. Artik adim adi ve SDK'nin kendi
         // hata metni ekranda gorunuyor.
         var step = "hazırlık"
+        guard await Self.sdkReady() else {
+            state = .failed("Gözlük köprüsü başlatılamadı.")
+            return
+        }
         do {
             let wearables = Wearables.shared
 
