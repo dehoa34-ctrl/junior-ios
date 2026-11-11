@@ -279,26 +279,30 @@ final class LiveEncoderTests: XCTestCase {
         // stop() sonunda ikinci parça da yazılır: fazladan fulfill testi bozmasın.
         wrote.assertForOverFulfill = false
         recorder.onChunkWritten = { wrote.fulfill() }
-        let format = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false))
-        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 32_000))
-        buffer.frameLength = 32_000  // 2 sn
-        for i in 0..<32_000 { buffer.floatChannelData![0][i] = Float(sin(Double(i) / 20)) * 0.2 }
+        // Gerçek mikrofon gibi 48 kHz float; kayıtçı 16 kHz Int16'ya çevirir.
+        let format = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 96_000))
+        buffer.frameLength = 96_000  // 2 sn
+        for i in 0..<96_000 { buffer.floatChannelData![0][i] = Float(sin(Double(i) / 60)) * 0.2 }
         recorder.append(buffer)
         XCTAssertLessThan(recorder.secondsSinceBuffer, 2)
         XCTAssertNil(recorder.lastWrite)
+        XCTAssertGreaterThan(recorder.bufferedBytes, 16_000, "dönüştürücü ses üretmedi")
 
         recorder.flushPartial()
         wait(for: [wrote], timeout: 5)
         XCTAssertNotNil(recorder.lastWrite)
         let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".wav") }
         XCTAssertEqual(names.count, 1)
+        try XCTSkipIf(names.isEmpty, "parça yazılmadı")
         let size = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent(names[0]).path)[.size] as? Int)
         XCTAssertGreaterThan(size, 60_000)  // ~2 sn = 64 KB + başlık
         XCTAssertNotNil(LocalRecording.parse(fileName: names[0], byteCount: size))
 
         // Çok kısa kalıntı (0,5 sn altı) yazılmaz.
-        let tiny = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1600))
-        tiny.frameLength = 1600
+        let tiny = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800))
+        tiny.frameLength = 4800  // 0,1 sn
+        for i in 0..<4800 { tiny.floatChannelData![0][i] = Float(sin(Double(i) / 60)) * 0.2 }
         recorder.append(tiny)
         recorder.flushPartial()
         recorder.stop()

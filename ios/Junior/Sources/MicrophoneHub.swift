@@ -179,6 +179,12 @@ final class AllDayRecorder: @unchecked Sendable {
         return Date().timeIntervalSince(lastBufferAt)
     }
 
+    /// Henüz diske yazılmamış (bellekteki) ses; test ve tanı için.
+    var bufferedBytes: Int {
+        lock.lock(); defer { lock.unlock() }
+        return pcm.count
+    }
+
     var lastWrite: Date? {
         lock.lock(); defer { lock.unlock() }
         return lastWriteAt
