@@ -96,6 +96,13 @@ struct SettingsView: View {
                     Toggle(isOn: $config.allDayRecordingEnabled) {
                         Label { Text("Gün boyu yerel kayıt") } icon: { SettingIcon(systemName: "record.circle", color: JuniorTheme.red) }
                     }
+                    if config.allDayRecordingEnabled {
+                        TimelineView(.periodic(from: .now, by: 5)) { _ in
+                            Text(MicrophoneHub.shared.allDayStatusText)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 } header: {
                     Text("Dinleme")
                 } footer: {

@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import Junior
 
@@ -268,6 +269,39 @@ final class LiveEncoderTests: XCTestCase {
         // Biraz taşan parça 60 sn'ye kırpılır (sunucu sınırı).
         let long = LocalRecording.parse(fileName: "junior-100000-000-ABCDEF12.wav", byteCount: 1_930_044)
         XCTAssertEqual((long?.t1 ?? 0) - (long?.t0 ?? 0), 60_000)
+    }
+
+    func testAllDayRecorderWritesPartialChunkOnFlushAndReportsHealth() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("rec-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let recorder = AllDayRecorder(directory: folder)
+        let wrote = expectation(description: "parça yazıldı")
+        recorder.onChunkWritten = { wrote.fulfill() }
+        let format = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 32_000))
+        buffer.frameLength = 32_000  // 2 sn
+        for i in 0..<32_000 { buffer.floatChannelData![0][i] = Float(sin(Double(i) / 20)) * 0.2 }
+        recorder.append(buffer)
+        XCTAssertLessThan(recorder.secondsSinceBuffer, 2)
+        XCTAssertNil(recorder.lastWrite)
+
+        recorder.flushPartial()
+        wait(for: [wrote], timeout: 5)
+        XCTAssertNotNil(recorder.lastWrite)
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".wav") }
+        XCTAssertEqual(names.count, 1)
+        let size = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent(names[0]).path)[.size] as? Int)
+        XCTAssertGreaterThan(size, 60_000)  // ~2 sn = 64 KB + başlık
+        XCTAssertNotNil(LocalRecording.parse(fileName: names[0], byteCount: size))
+
+        // Çok kısa kalıntı (0,5 sn altı) yazılmaz.
+        let tiny = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1600))
+        tiny.frameLength = 1600
+        recorder.append(tiny)
+        recorder.flushPartial()
+        recorder.stop()
+        let after = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".wav") }
+        XCTAssertEqual(after.count, 2)  // stop() kalıntıyı yine de yazar
     }
 
     func testLocalRecordingRejectsForeignNames() {

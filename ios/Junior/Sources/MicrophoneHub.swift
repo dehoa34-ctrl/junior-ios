@@ -1,6 +1,10 @@
 import AVFoundation
 import Foundation
 import Speech
+import UserNotifications
+
+/// Gün boyu kaydın canlılık bildiriminin kimliği (tek bildirim, yenilenir).
+private let aliveAlertID = "junior.allday.alive"
 
 /// Tanıma isteğini ses iş parçacığıyla paylaşan kilitli kutu.
 ///
@@ -152,11 +156,45 @@ final class AllDayRecorder: @unchecked Sendable {
     private var source: AVAudioFormat?
     private var pcm = Data()
     private var stopped = false
+    private var lastBufferAt = Date()
+    private var lastWriteAt: Date?
+    /// Bir parça diske yazılınca çağrılır (kayıt canlı mı bekçisi için). Yazma iş parçacığından.
+    var onChunkWritten: (@Sendable () -> Void)?
+    /// Yarım parça yazmaya değecek en az uzunluk: 0,5 sn.
+    static let minFlushBytes = 16_000
 
-    init() {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        directory = documents.appendingPathComponent("JuniorRecordings", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    init(directory: URL? = nil) {
+        if let directory {
+            self.directory = directory
+        } else {
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            self.directory = documents.appendingPathComponent("JuniorRecordings", isDirectory: true)
+        }
+        try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
+    }
+
+    /// Son ses diliminin üstünden geçen süre. Motor "çalışıyor" görünüp ses gelmiyorsa büyür.
+    var secondsSinceBuffer: TimeInterval {
+        lock.lock(); defer { lock.unlock() }
+        return Date().timeIntervalSince(lastBufferAt)
+    }
+
+    var lastWrite: Date? {
+        lock.lock(); defer { lock.unlock() }
+        return lastWriteAt
+    }
+
+    /// Kesinti başlarken bellekteki yarım parçayı yazar; yoksa 60 sn dolana dek bellekte kalır
+    /// ve motor geri gelmezse kaybolurdu.
+    func flushPartial() {
+        var completed: Data?
+        lock.lock()
+        if !stopped, pcm.count >= Self.minFlushBytes {
+            completed = pcm
+            pcm.removeAll(keepingCapacity: true)
+        }
+        lock.unlock()
+        if let completed { enqueue(completed) }
     }
 
     func append(_ buffer: AVAudioPCMBuffer) {
@@ -166,6 +204,7 @@ final class AllDayRecorder: @unchecked Sendable {
             lock.unlock()
             return
         }
+        lastBufferAt = Date()
         if converter == nil || source != buffer.format {
             converter = AVAudioConverter(from: buffer.format, to: target)
             source = buffer.format
@@ -213,11 +252,17 @@ final class AllDayRecorder: @unchecked Sendable {
 
     private func enqueue(_ body: Data) {
         guard !body.isEmpty else { return }
-        writeQueue.async { [directory] in
+        writeQueue.async { [directory, weak self] in
             let stamp = String(format: "%.3f", Date().timeIntervalSince1970).replacingOccurrences(of: ".", with: "-")
             let url = directory.appendingPathComponent("junior-\(stamp)-\(UUID().uuidString.prefix(8)).wav")
             do {
                 try WAVFile.pcm16(body, sampleRate: Int(Self.sampleRate)).write(to: url, options: .atomic)
+                if let self {
+                    self.lock.lock()
+                    self.lastWriteAt = Date()
+                    self.lock.unlock()
+                    self.onChunkWritten?()
+                }
             } catch {
                 NSLog("Junior yerel kayıt yazılamadı: %@", String(describing: error))
             }
@@ -259,6 +304,10 @@ final class MicrophoneHub {
     private var liveWanted = false
     private var allDayRecordingWanted = false
     private var allDayRecorder: AllDayRecorder?
+    private var aliveWatchdog: Task<Void, Never>?
+    /// Sistem kesintisi (çağrı, Siri, alarm) başladığı an; bitince nil. Bekçi, kesintiyi
+    /// "ses gelmiyor" sanıp çağrının ortasında motoru yeniden kurmasın diye.
+    private var interruptedSince: Date?
     private var observers: [NSObjectProtocol] = []
     private var retryTask: Task<Void, Never>?
 
@@ -283,6 +332,7 @@ final class MicrophoneHub {
                                              object: nil, queue: .main) { _ in
             Task { @MainActor in
                 MicrophoneHub.shared.lastDisruption = Date()
+                MicrophoneHub.shared.allDayRecorder?.flushPartial()
                 MicrophoneHub.shared.recover()
             }
         })
@@ -343,12 +393,26 @@ final class MicrophoneHub {
     func setAllDayRecording(_ enabled: Bool) {
         if enabled {
             allDayRecordingWanted = true
-            if allDayRecorder == nil { allDayRecorder = AllDayRecorder() }
+            if allDayRecorder == nil {
+                let recorder = AllDayRecorder()
+                recorder.onChunkWritten = { Self.scheduleAliveAlert() }
+                allDayRecorder = recorder
+            }
             box.setRecorder(allDayRecorder)
             do { try start() } catch { recover() }
+            // Seçenekler (başka uygulamalarla karışma) yalnız motor kurulurken okunur; çalışıyorsa yerinde güncelle.
+            if isRunning, engine.isRunning {
+                try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .spokenAudio, options: categoryOptions)
+            }
+            Self.requestAliveAlertPermission()
+            Self.scheduleAliveAlert()
+            startAliveWatchdog()
             return
         }
         allDayRecordingWanted = false
+        aliveWatchdog?.cancel()
+        aliveWatchdog = nil
+        Self.cancelAliveAlert()
         box.setRecorder(nil)
         allDayRecorder?.stop()
         allDayRecorder = nil
@@ -356,6 +420,85 @@ final class MicrophoneHub {
         guard !box.hasConsumer, !liveWanted else { return }
         wanted = false
         stopEngine()
+    }
+
+    // MARK: - Gün boyu kaydın canlılığı
+
+    /// Gün boyu kayıt açıkken uygulama öne her dönüşünde çağrılır: motor sessizce düşmüş
+    /// ya da ses akışı kesilmiş olabilir (arka planda iOS yeni mikrofon oturumu açtırmaz,
+    /// bu yüzden toparlama çoğu kez ancak uygulama öne gelince mümkün).
+    func refreshAllDay() {
+        guard allDayRecordingWanted else { return }
+        interruptedSince = nil
+        Self.removeDeliveredAliveAlert()
+        Self.scheduleAliveAlert()
+        do { try start() } catch { recover() }
+        if let recorder = allDayRecorder, recorder.secondsSinceBuffer > 5 {
+            recorder.flushPartial()
+            forceRestartEngine()
+        }
+        startAliveWatchdog()
+    }
+
+    /// Motoru sıfırdan kurar (yeni AVAudioEngine); ses yolu bozulduğunda eski motor "çalışıyor" diyebilir.
+    private func forceRestartEngine() {
+        engine.inputNode.removeTap(onBus: 0)
+        if engine.isRunning { engine.stop() }
+        engine = AVAudioEngine()
+        isRunning = false
+        lastDisruption = Date()
+        recover()
+    }
+
+    /// 15 sn'de bir bakar: motor çalışıyor görünüp 20 sn'dir ses gelmiyorsa motoru yeniden kurar.
+    private func startAliveWatchdog() {
+        guard aliveWatchdog == nil else { return }
+        aliveWatchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard let self, self.allDayRecordingWanted else { return }
+                if let since = self.interruptedSince, Date().timeIntervalSince(since) < 180 { continue }
+                if let recorder = self.allDayRecorder, recorder.secondsSinceBuffer > 20 {
+                    recorder.flushPartial()
+                    self.forceRestartEngine()
+                }
+            }
+        }
+    }
+
+    /// Ayarlar'da gösterilen tek satırlık durum.
+    var allDayStatusText: String {
+        guard allDayRecordingWanted else { return "Kapalı" }
+        let last = allDayRecorder?.lastWrite.map { "son parça " + $0.formatted(date: .omitted, time: .standard) }
+            ?? "henüz parça yazılmadı"
+        let alive = isRunning && engine.isRunning && (allDayRecorder?.secondsSinceBuffer ?? .infinity) < 5
+        return (alive ? "Kaydediyor" : "Kesintide") + " · " + last
+    }
+
+    // Ölü adam anahtarı: her parça yazılınca 3 dk sonrasına bir bildirim kurulur ve
+    // yenilenir. Kayıt durursa (iOS uygulamayı askıya aldıysa kod çalışmaz) kimse
+    // yenilemez ve bildirim telefonu çaldırır.
+    nonisolated static func scheduleAliveAlert() {
+        let content = UNMutableNotificationContent()
+        content.title = "Junior kaydı durmuş olabilir"
+        content.body = "Gün boyu yerel kayıt 3 dakikadır parça yazmadı. Sürdürmek için Junior'u aç."
+        content.sound = .default
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 180, repeats: false)
+        let request = UNNotificationRequest(identifier: aliveAlertID, content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    nonisolated static func cancelAliveAlert() {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [aliveAlertID])
+        removeDeliveredAliveAlert()
+    }
+
+    nonisolated static func removeDeliveredAliveAlert() {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [aliveAlertID])
+    }
+
+    nonisolated static func requestAliveAlertPermission() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
     /// Gözlük bağlıysa mikrofonu ondan alır.
@@ -414,7 +557,7 @@ final class MicrophoneHub {
     /// ve mikrofon müzik çalarken de açık kalır. Kapalıyken eski davranış korunur.
     private var categoryOptions: AVAudioSession.CategoryOptions {
         var options: AVAudioSession.CategoryOptions = [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
-        if liveWanted { options.insert(.mixWithOthers) }
+        if liveWanted || allDayRecordingWanted { options.insert(.mixWithOthers) }
         return options
     }
 
@@ -454,7 +597,10 @@ final class MicrophoneHub {
             isRunning = false
             // Yarım kalan konuşma, ses geri gelene (belki hiç gelmeyene) kadar bellekte beklemesin.
             box.flushLive()
+            allDayRecorder?.flushPartial()
+            interruptedSince = Date()
         } else {
+            interruptedSince = nil
             recover()
         }
     }

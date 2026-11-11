@@ -87,6 +87,7 @@ struct RootView: View {
         // Arka planda yeniden deneme dongusu durur; cepteyken aga cikmasin.
         .onChange(of: scenePhase) {
             if scenePhase == .active {
+                MicrophoneHub.shared.refreshAllDay()
                 server.check()
                 phoneTasks.start()
                 store.resumeVideoJob()
