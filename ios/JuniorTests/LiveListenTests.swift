@@ -276,6 +276,8 @@ final class LiveEncoderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: folder) }
         let recorder = AllDayRecorder(directory: folder)
         let wrote = expectation(description: "parça yazıldı")
+        // stop() sonunda ikinci parça da yazılır: fazladan fulfill testi bozmasın.
+        wrote.assertForOverFulfill = false
         recorder.onChunkWritten = { wrote.fulfill() }
         let format = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false))
         let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 32_000))
