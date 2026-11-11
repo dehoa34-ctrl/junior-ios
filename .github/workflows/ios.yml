@@ -127,6 +127,14 @@ jobs:
             xcrun simctl io "$UDID" screenshot "shots/$scene.png"
           done
           ls -l shots
+          echo "===== live sahnesi tanilama ====="
+          xcrun simctl terminate "$UDID" xyz.jrbilge.junior 2>/dev/null || true
+          (xcrun simctl launch --console "$UDID" xyz.jrbilge.junior -JuniorDemo live > live_console.log 2>&1 &) 
+          sleep 12
+          xcrun simctl io "$UDID" screenshot "shots/live2.png" || true
+          tail -40 live_console.log || true
+          xcrun simctl spawn "$UDID" log show --last 1m --style compact --predicate 'process == "Junior"' 2>/dev/null | grep -viE "CoreData|Metal|RenderBox" | tail -60 || true
+          sleep 5
           echo "===== Cokme raporlari ====="
           ls -t ~/Library/Logs/DiagnosticReports 2>/dev/null | head -5 || true
           for f in $(ls -t ~/Library/Logs/DiagnosticReports/Junior* 2>/dev/null | head -1); do
