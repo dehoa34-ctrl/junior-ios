@@ -158,7 +158,17 @@ final class ConversationStore: ObservableObject {
     /// İkinci kez de telefona bırakılırsa döngüye girmez, durumu söyler.
     func retryAfterLaunch(_ text: String) {
         retryTask?.cancel()
+        // Spotify açılınca Junior arka plana düşer; ses kipi kapalıysa iOS bizi askıya alır
+        // ve 4,5 sn'lik bekleme ile yeniden gönderme geç kalır ya da hiç olmazdı.
+        var background = UIApplication.shared.beginBackgroundTask(withName: "junior-spotify-retry")
+        let finish: @MainActor () -> Void = {
+            if background != .invalid {
+                UIApplication.shared.endBackgroundTask(background)
+                background = .invalid
+            }
+        }
         retryTask = Task { [weak self] in
+            defer { finish() }
             try? await Task.sleep(nanoseconds: 4_500_000_000)
             guard let self, !Task.isCancelled else { return }
             await self.resend(text)

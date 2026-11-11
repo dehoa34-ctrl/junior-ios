@@ -26,6 +26,14 @@ final class RequestBox: @unchecked Sendable {
         live = value
     }
 
+    /// Açık kalmış konuşmayı hemen kapatıp kuyruğa verir (kesinti başlarken).
+    func flushLive() {
+        lock.lock()
+        let tap = live
+        lock.unlock()
+        tap?.flush()
+    }
+
     func append(_ buffer: AVAudioPCMBuffer) {
         lock.lock()
         let current = request
@@ -319,9 +327,18 @@ final class MicrophoneHub {
         if began {
             // Sistem motoru durdurdu (çağrı, Siri, alarm). Bayrağı doğru tut.
             isRunning = false
+            // Yarım kalan konuşma, ses geri gelene (belki hiç gelmeyene) kadar bellekte beklemesin.
+            box.flushLive()
         } else {
             recover()
         }
+    }
+
+    /// İstenen mikrofon düşmüşse yeniden açmayı dener (öne dönünce ve bekçi
+    /// görevinden). Kesinti bitti bildirimi hiç gelmediyse tek kurtarıcı budur.
+    func reviveIfWanted() {
+        guard isWanted, !engine.isRunning else { return }
+        recover(attempt: 0)
     }
 
     private func handleMediaReset() {
@@ -333,6 +350,7 @@ final class MicrophoneHub {
 
     /// Dışarıdan durdurulan motoru, istendiği sürece yeniden açar. Kesinti
     /// bittikten hemen sonra oturum açılamayabiliyor; birkaç kez tekrar denenir.
+    /// Sürekli dinleme açıkken vazgeçilmez: aralık 2 sn'den 30 sn'ye kadar uzar.
     private func recover(attempt: Int = 0) {
         guard isWanted, !engine.isRunning else { return }
         isRunning = false
@@ -340,9 +358,10 @@ final class MicrophoneHub {
         do {
             try startEngine()
         } catch {
-            guard attempt < 5 else { return }
+            guard attempt < 5 || liveWanted else { return }
+            let seconds = min(30, 2 * (attempt + 1))
             retryTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
                 guard !Task.isCancelled else { return }
                 self?.recover(attempt: attempt + 1)
             }

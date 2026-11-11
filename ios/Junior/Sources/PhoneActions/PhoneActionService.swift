@@ -41,7 +41,25 @@ final class PhoneActionService {
     static let shared = PhoneActionService()
 
     /// Bildirime dokunulup eylem yapıldıktan sonra çağrılır: (söylenecek metin, yeniden denenecek komut).
-    var onFollowUp: ((_ message: String?, _ retryText: String?) -> Void)?
+    var onFollowUp: ((_ message: String?, _ retryText: String?) -> Void)? {
+        didSet { drainFollowUps() }
+    }
+
+    /// Soğuk açılışta bildirime dokunulunca `ConversationStore` henüz yoktur; sonuç
+    /// kaybolmasın diye dinleyici bağlanana dek burada bekler.
+    private var pendingFollowUps: [(message: String?, retryText: String?)] = []
+
+    private func deliver(_ message: String?, _ retryText: String?) {
+        pendingFollowUps.append((message, retryText))
+        drainFollowUps()
+    }
+
+    private func drainFollowUps() {
+        guard let handler = onFollowUp, !pendingFollowUps.isEmpty else { return }
+        let items = pendingFollowUps
+        pendingFollowUps = []
+        for item in items { handler(item.message, item.retryText) }
+    }
 
     private let notifications = UNUserNotificationCenter.current()
 
@@ -50,10 +68,64 @@ final class PhoneActionService {
     /// Eylemi yürütür. `payload` ham `phone_action` nesnesidir (bildirime konur);
     /// `retryText` Spotify açıldıktan sonra yeniden gönderilecek kullanıcı cümlesidir.
     func perform(_ action: PhoneAction, payload: [String: Any], retryText: String?) async -> PhoneActionResult {
+        // iOS izin penceresini arka planda gösteremez; istek uygulama öne gelene dek
+        // takılır ve sesli tur hiç yanıt alamazdı. Önceden söyle.
+        if UIApplication.shared.applicationState != .active, let missing = await firstUnaskedPermission(for: action) {
+            return .failed("\(missing) izni daha sorulmadı ve arka planda soramıyorum. "
+                           + "Junior'ı açıp Ayarlar'da \"Telefon eylemleri izinlerini ver\"e dokun.")
+        }
         if action.needsForeground, UIApplication.shared.applicationState != .active {
             return await defer_(action, payload: payload, retryText: retryText)
         }
         return await execute(action)
+    }
+
+    /// Eylemin ihtiyaç duyduğu izinlerden henüz hiç sorulmamış olan ilkinin adı (yoksa nil).
+    private func firstUnaskedPermission(for action: PhoneAction) async -> String? {
+        func notificationsUnasked() async -> Bool {
+            await notifications.notificationSettings().authorizationStatus == .notDetermined
+        }
+        switch action {
+        case .reminder:
+            if EKEventStore.authorizationStatus(for: .reminder) == .notDetermined { return "Hatırlatıcılar" }
+            return nil
+        case .event:
+            if EKEventStore.authorizationStatus(for: .event) == .notDetermined { return "Takvim" }
+            return nil
+        case .timer:
+            if await notificationsUnasked() { return "Bildirim" }
+            return nil
+        case .call(let contact, let number), .message(let contact, let number, _, _):
+            if (number ?? "").isEmpty, contact != nil, CNContactStore.authorizationStatus(for: .contacts) == .notDetermined {
+                return "Rehber"
+            }
+            if action.needsForeground, await notificationsUnasked() { return "Bildirim" }
+            return nil
+        case .appleMusic(_, let query):
+            if query != nil, MPMediaLibrary.authorizationStatus() == .notDetermined { return "Müzik kitaplığı" }
+            return nil
+        case .openApp, .torch, .spotify:
+            if action.needsForeground, await notificationsUnasked() { return "Bildirim" }
+            return nil
+        }
+    }
+
+    /// Ayarlar'daki düğme: telefon eylemlerinin istediği izinleri ön plandayken sırayla sorar.
+    /// Dönüş: kullanıcıya gösterilecek özet.
+    func requestAllPermissions() async -> String {
+        var missing: [String] = []
+        if !((try? await notifications.requestAuthorization(options: [.alert, .sound])) ?? false) { missing.append("Bildirim") }
+        let store = EKEventStore()
+        if !((try? await store.requestFullAccessToReminders()) ?? false) { missing.append("Hatırlatıcılar") }
+        if !((try? await store.requestFullAccessToEvents()) ?? false) { missing.append("Takvim") }
+        if !((try? await CNContactStore().requestAccess(for: .contacts)) ?? false) { missing.append("Rehber") }
+        let media = await withCheckedContinuation { (continuation: CheckedContinuation<MPMediaLibraryAuthorizationStatus, Never>) in
+            MPMediaLibrary.requestAuthorization { continuation.resume(returning: $0) }
+        }
+        if media != .authorized { missing.append("Müzik kitaplığı") }
+        return missing.isEmpty
+            ? "Tüm izinler verildi."
+            : "Verilmeyenler: \(missing.joined(separator: ", ")). Ayarlar > Junior bölümünden açabilirsin."
     }
 
     /// Bildirime dokunulunca: uygulama öne gelince eylemi yapar.
@@ -69,8 +141,8 @@ final class PhoneActionService {
             }
             let result = await execute(action)
             switch result.kind {
-            case .needsRetry: onFollowUp?(result.message, retryText)
-            default: onFollowUp?(result.message, nil)
+            case .needsRetry: deliver(result.message, retryText)
+            default: deliver(result.message, nil)
             }
         }
     }
@@ -297,7 +369,7 @@ final class PhoneActionService {
 
         switch channel {
         case .whatsapp:
-            let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? text
+            let encoded = Self.queryEscaped(text)
             let phone = recipient.map(ContactMatching.international)
             var candidates: [String] = []
             if let phone, !phone.isEmpty {
@@ -317,7 +389,7 @@ final class PhoneActionService {
                 return note.map { PhoneActionResult.doneSaying($0) } ?? .done
             }
             // Oluşturucu açılamazsa sistem bağlantısı.
-            let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? text
+            let encoded = Self.queryEscaped(text)
             let target = recipients.first ?? ""
             if let url = URL(string: "sms:\(target)&body=\(encoded)"), await open(url) {
                 return note.map { PhoneActionResult.doneSaying($0) } ?? .done
@@ -394,6 +466,18 @@ final class PhoneActionService {
         }
     }
 
+    /// Sorgu değeri için kaçışlama. `.urlQueryAllowed` `& # + = ? /` karakterlerini
+    /// olduğu gibi bırakıp "Ali & Veli 5+5" gibi metni kesiyor ya da bozuyordu.
+    static let queryValueAllowed: CharacterSet = {
+        var set = CharacterSet.urlQueryAllowed
+        set.remove(charactersIn: "&=+#?/;:@$,")
+        return set
+    }()
+
+    static func queryEscaped(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: queryValueAllowed) ?? value
+    }
+
     static func spotifySearchURL(_ query: String) -> String? {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
@@ -441,7 +525,7 @@ final class PhoneActionService {
                 return .done
             }
             // Kitaplıkta yok: Apple Müzik'te aramayı aç (yalnız ön planda mümkün).
-            let term = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+            let term = Self.queryEscaped(query)
             if UIApplication.shared.applicationState == .active,
                let url = URL(string: "https://music.apple.com/tr/search?term=\(term)"), await open(url) {
                 return .doneSaying("Kitaplığında \(query) yok; Apple Müzik'te aramasını açtım.")

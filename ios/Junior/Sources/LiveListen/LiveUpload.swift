@@ -30,6 +30,8 @@ enum LiveUploadOutcome: Equatable {
     case reject
     /// Belirteç geçersiz: kullanıcı düzeltene dek yavaş dene.
     case unauthorized
+    /// Uç nokta yok (404/405): bilgisayardaki Junior sunucusu eski. Yavaş dene ve uyar.
+    case unsupported
 }
 
 enum LiveUpload {
@@ -45,6 +47,7 @@ enum LiveUpload {
         switch status {
         case 200..<300: return .accepted
         case 401, 403: return .unauthorized
+        case 404, 405: return .unsupported
         case 400, 413, 415, 422: return .reject
         default: return .retry
         }

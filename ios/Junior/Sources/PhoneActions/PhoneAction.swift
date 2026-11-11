@@ -245,14 +245,13 @@ enum PhoneAppCatalog {
         add(["twitter", "x"], "X", "twitter://")
         add(["mail", "eposta", "e-posta", "posta"], "Mail", "message://")
         add(["mesajlar", "mesaj", "sms"], "Mesajlar", "sms:")
-        add(["telefon", "ara"], "Telefon", "tel:")
         add(["muzik", "apple muzik"], "Müzik", "music://")
         add(["fotograflar", "galeri", "foto"], "Fotoğraflar", "photos-redirect://")
         add(["takvim"], "Takvim", "calshow://")
         add(["hatirlaticilar", "hatirlatici"], "Hatırlatıcılar", "x-apple-reminderkit://")
         add(["notlar", "not defteri"], "Notlar", "mobilenotes://")
         add(["safari", "tarayici"], "Safari", "https://www.apple.com")
-        add(["ayarlar"], "Ayarlar", "app-settings:")
+        add(["ayarlar", "junior ayarlari"], "Junior ayarları", "app-settings:")
         return map
     }()
 

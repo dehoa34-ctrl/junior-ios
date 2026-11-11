@@ -97,7 +97,10 @@ struct RootView: View {
             handsFree.continuousEnabled = config.continuousEnabled
         }
         .onChange(of: config.wakeWordEnabled) { syncWakeWord() }
-        .onChange(of: config.phoneLiveEnabled) { live.sync() }
+        .onChange(of: config.phoneLiveEnabled) {
+            // Duraklatılmışken anahtarı açmak "bir şey olmuyor" gibi görünüyordu.
+            if config.phoneLiveEnabled, live.paused { live.paused = false } else { live.sync() }
+        }
         .onChange(of: config.serverRecognitionEnabled) { wireRecognition() }
         // Ayarlar kapaninca yeni adresle hemen bakilir; yoksa uyari eski
         // (bos) adresin sonucunu gosterip "Yeniden dene"yi bekliyordu.

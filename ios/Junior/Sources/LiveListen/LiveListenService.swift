@@ -48,6 +48,13 @@ final class LiveListenService: ObservableObject {
     private var loop: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
     private var backoff = UploadBackoff()
+    private var watchdog: Task<Void, Never>?
+    /// Sunucu erişilebilirken arka arkaya hata alan parçalar: kimlik -> hata sayısı.
+    private var failures: [String: Int] = [:]
+    /// Çok hata veren, bir süre kenara alınan parçalar: kimlik -> yeniden deneme zamanı.
+    private var parked: [String: Date] = [:]
+    private static let parkAfterFailures = 8
+    private static let parkSeconds: TimeInterval = 3600
     private(set) var isDemo = false
 
     var paused: Bool {
@@ -96,7 +103,12 @@ final class LiveListenService: ObservableObject {
     }
 
     private func startRecording() async {
-        guard tap == nil else { updateState(); return }
+        guard tap == nil else {
+            // Uzun bir kesintiden sonra (arama, Siri) motor kendiliğinden dönmemiş olabilir.
+            MicrophoneHub.shared.reviveIfWanted()
+            updateState()
+            return
+        }
         let allowed = await Self.microphoneGranted()
         // İzin sorulurken kullanıcı kapatmış/duraklatmış olabilir.
         guard config.phoneLiveEnabled, !paused, tap == nil else { return }
@@ -115,6 +127,21 @@ final class LiveListenService: ObservableObject {
         tap = newTap
         newTap.setSuppressed(speech.state == .speaking)
         updateState()
+        startWatchdog()
+    }
+
+    /// Yükleyici sunucu kapalıyken dakikalarca uyuyabilir; mikrofon durumunu ve
+    /// toparlanmayı ondan bağımsız izler.
+    private func startWatchdog() {
+        guard watchdog == nil else { return }
+        watchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                guard let self else { return }
+                if self.tap != nil { MicrophoneHub.shared.reviveIfWanted() }
+                self.updateState()
+            }
+        }
     }
 
     private func stopRecording() {
@@ -122,6 +149,8 @@ final class LiveListenService: ObservableObject {
         MicrophoneHub.shared.disableLive()
         tap.flush()
         self.tap = nil
+        watchdog?.cancel()
+        watchdog = nil
     }
 
     private func updateState() {
@@ -148,12 +177,18 @@ final class LiveListenService: ObservableObject {
     private nonisolated func store(segment: LiveSegment, data: Data, ext: String) {
         let id = LiveUpload.makeID(t0: segment.t0)
         let result = queue.enqueue(id: id, audio: data, ext: ext, t0: segment.t0, t1: segment.t1, rms: segment.rms)
-        guard let result else { return }
+        guard let result else {
+            // Yazılamadı (çoğunlukla disk dolu): sessizce kaybetme.
+            Task { @MainActor [weak self] in
+                self?.warning = "Konuşma kaydedilemedi: telefonun diski dolu olabilir."
+            }
+            return
+        }
         Task { @MainActor [weak self] in
             guard let self else { return }
             if result.dropped > 0 {
                 self.droppedCount += result.dropped
-                self.warning = "Kuyruk doldu: bilgisayara ulaşılamadığı için en eski \(self.droppedCount) konuşma silindi."
+                self.warning = "Kuyruk doldu (sınır ya da boş yer): en eski \(self.droppedCount) konuşma silindi."
             }
             self.refreshCounts()
         }
@@ -181,7 +216,9 @@ final class LiveListenService: ObservableObject {
     private func uploadStep() async -> TimeInterval {
         updateState()
         refreshCounts()
-        guard let item = queue.first() else {
+        let now = Date()
+        parked = parked.filter { $0.value > now }
+        guard let item = queue.first(skipping: Set(parked.keys)) else {
             return 3
         }
         guard let healthURL = config.url(path: "/health"),
@@ -205,7 +242,9 @@ final class LiveListenService: ObservableObject {
         switch outcome {
         case .accepted:
             queue.remove(item)
+            failures[item.id] = nil
             backoff.succeeded()
+            if warning?.hasPrefix("Bilgisayardaki") == true { warning = nil }
             lastUpload = Date()
             uploadedCount += 1
             if warning?.hasPrefix("Belirteç") == true { warning = nil }
@@ -214,13 +253,27 @@ final class LiveListenService: ObservableObject {
         case .reject:
             // Sunucu bu parçayı asla kabul etmeyecek; tutmak kuyruğu tıkar.
             queue.remove(item)
+            failures[item.id] = nil
             refreshCounts()
             return 0.05
         case .unauthorized:
             warning = "Belirteç bilgisayarda kabul edilmedi. Ayarlar'dan yeniden eşleştir."
             backoff.failed()
             return max(30, backoff.delay)
+        case .unsupported:
+            warning = "Bilgisayardaki Junior sunucusu eski (canlı dinleme ucu yok). Sunucuyu güncelle."
+            backoff.failed()
+            return max(60, backoff.delay)
         case .retry:
+            // Sunucu sağlıklı (/health açık) ama bu parça hep hata veriyor: sıradakiler
+            // beklemesin diye bir süre kenara alınır, silinmez.
+            let count = (failures[item.id] ?? 0) + 1
+            failures[item.id] = count
+            if count >= Self.parkAfterFailures {
+                parked[item.id] = Date().addingTimeInterval(Self.parkSeconds)
+                failures[item.id] = nil
+                return 0.5
+            }
             backoff.failed()
             return backoff.delay
         }

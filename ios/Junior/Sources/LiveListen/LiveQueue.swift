@@ -70,10 +70,19 @@ final class LiveQueue: @unchecked Sendable {
     var count: Int { lock.lock(); defer { lock.unlock() }; return index.count }
     var totalBytes: Int { lock.lock(); defer { lock.unlock() }; return total }
 
-    /// Yüklenecek sıradaki (en eski) parça.
-    func first() -> LiveQueueItem? {
+    /// Yüklenecek sıradaki (en eski) parça. `skipping`: geçici olarak kenara alınmış
+    /// kimlikler (sunucunun sürekli hata verdiği parça kuyruğun başını tıkamasın).
+    func first(skipping: Set<String> = []) -> LiveQueueItem? {
         lock.lock(); defer { lock.unlock() }
-        return index.first
+        return skipping.isEmpty ? index.first : index.first { !skipping.contains($0.id) }
+    }
+
+    /// Diskte, kuyruğa ayrılabilecek yer: boş alan eksi güvenlik payı. Okunamazsa sınırsız.
+    private func diskBudget(currentTotal: Int) -> Int {
+        let reserve = 300_000_000
+        guard let values = try? directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+              let free = values.volumeAvailableCapacityForImportantUsage else { return Int.max }
+        return max(20_000_000, currentTotal + Int(free) - reserve)
     }
 
     func items() -> [LiveQueueItem] {
@@ -106,7 +115,8 @@ final class LiveQueue: @unchecked Sendable {
         index.append(item)
         index.sort { $0.t0 < $1.t0 }
         total = index.reduce(0) { $0 + $1.bytes }
-        let overflow = LiveQueuePolicy.overflow(index, capBytes: capBytes)
+        // Sınır yalnız 1,5 GB değil: telefonun diski de dolmasın (boş alan - 300 MB).
+        let overflow = LiveQueuePolicy.overflow(index, capBytes: min(capBytes, diskBudget(currentTotal: total)))
         let dropIDs = Set(overflow.map(\.id))
         if !dropIDs.isEmpty {
             index.removeAll { dropIDs.contains($0.id) }

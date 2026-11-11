@@ -152,6 +152,18 @@ final class ContactMatchingTests: XCTestCase {
     }
 }
 
+final class PhoneQueryEscapeTests: XCTestCase {
+    @MainActor
+    func testReservedCharactersAreEscaped() {
+        let escaped = PhoneActionService.queryEscaped("Ali & Veli 5+5 #1=ok")
+        XCTAssertFalse(escaped.contains("&"))
+        XCTAssertFalse(escaped.contains("+"))
+        XCTAssertFalse(escaped.contains("#"))
+        XCTAssertFalse(escaped.contains("="))
+        XCTAssertEqual(escaped.removingPercentEncoding, "Ali & Veli 5+5 #1=ok")
+    }
+}
+
 final class PhoneAppCatalogTests: XCTestCase {
     func testKnownAppsAndInflections() {
         XCTAssertEqual(PhoneAppCatalog.lookup("spotify")?.url, "spotify://")
@@ -160,6 +172,8 @@ final class PhoneAppCatalogTests: XCTestCase {
         XCTAssertEqual(PhoneAppCatalog.lookup("Spotify'ı")?.display, "Spotify")
         XCTAssertEqual(PhoneAppCatalog.lookup("fotoğraflar")?.display, "Fotoğraflar")
         XCTAssertNil(PhoneAppCatalog.lookup("bilinmeyenuygulama"))
+        // "ara" numarasız tel: açıyordu ve hiçbir şey olmuyordu.
+        XCTAssertNil(PhoneAppCatalog.lookup("ara"))
     }
 }
 

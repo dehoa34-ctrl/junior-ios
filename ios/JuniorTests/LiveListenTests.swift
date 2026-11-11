@@ -226,6 +226,18 @@ final class LiveUploadTests: XCTestCase {
         XCTAssertEqual(LiveUpload.classify(status: 400), .reject)
         XCTAssertEqual(LiveUpload.classify(status: 429), .retry)
         XCTAssertEqual(LiveUpload.classify(status: 503), .retry)
+        XCTAssertEqual(LiveUpload.classify(status: 404), .unsupported)
+        XCTAssertEqual(LiveUpload.classify(status: 405), .unsupported)
+    }
+
+    func testFirstSkipsParkedItems() {
+        let queue = LiveQueue(directory: FileManager.default.temporaryDirectory
+                                .appendingPathComponent("junior-skip-\(UUID().uuidString)"),
+                              capBytes: 1_000_000)
+        queue.enqueue(id: "ph-1", audio: Data(repeating: 1, count: 10), ext: "m4a", t0: 1_000, t1: 1_500, rms: nil)
+        queue.enqueue(id: "ph-2", audio: Data(repeating: 1, count: 10), ext: "m4a", t0: 2_000, t1: 2_500, rms: nil)
+        XCTAssertEqual(queue.first(skipping: ["ph-1"])?.id, "ph-2")
+        XCTAssertNil(queue.first(skipping: ["ph-1", "ph-2"]))
     }
 }
 

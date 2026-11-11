@@ -104,7 +104,7 @@ struct LiveSettingsSection: View {
         } header: {
             Text("Sürekli dinleme")
         } footer: {
-            Text("Açıkken telefon gün boyu dinler (pil umurumuzda değil). Konuşma algılanınca 0,6–25 saniyelik "
+            Text("Açıkken telefon gün boyu dinler (pil tüketimi artar). Konuşma algılanınca 0,6–25 saniyelik "
                  + "parçalar kesilir, telefonda bekletilir ve bilgisayara yüklenir; yazıya çevirme, konuşmacı "
                  + "ayrımı ve arşiv bilgisayarda yapılır, ses başka hiçbir yere gönderilmez. Bilgisayar kapalıysa "
                  + "parçalar telefonda birikir (en çok 1,5 GB; dolunca en eskiler silinir). Telefon görüşmesi ya da "

@@ -354,40 +354,62 @@ final class GlassesService: ObservableObject {
         listenTokens = []
         photoStarted = false
         photoStartRequested = false
+        streamReady = false
         await session?.stop()
         session = nil
         if case .failed = state {} else { state = .idle }
     }
 
+    /// Çekim yolu. `stream`: akışın kendi `capturePhoto` çağrısı (Codex dalı, akış
+    /// açık kalır); `photo`: akış sensörü uyandırır, `Camera.photo` başlayınca akış
+    /// kapanır (Meta BirdSpotter örneği).
+    enum CapturePath: String {
+        case stream, photo
+        var other: CapturePath { self == .stream ? .photo : .stream }
+    }
+
+    private static let pathKey = "junior.glasses.capturePath"
+
+    /// Son başarılı yol saklanır. Gerçek cihazdaki tek kanıt (build 11), `photo` yolunun
+    /// Ray-Ban Meta'da "Unknown capture error" verdiği; bu yüzden hiçbir şey saklı
+    /// değilken önce `stream` denenir, o da olmazsa diğeri.
+    private var preferredPath: CapturePath {
+        get {
+            UserDefaults.standard.string(forKey: Self.pathKey).flatMap(CapturePath.init(rawValue:)) ?? .stream
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Self.pathKey) }
+    }
+
+    /// Şu anki çekimin yolu; `streamStateChanged` fotoğraf yeteneğini yalnız `photo`
+    /// yolunda başlatır (akış açıkken `Camera.photo` çakışıyordu).
+    private var activePath: CapturePath = .stream
+    private var streamReady = false
+
     /// İstek anında tek kare alır. Çağıran taraf bunu doğrudan Junior'a gönderir.
     ///
-    /// SDK 1.0'daki doğru sıra (Meta'nın BirdSpotter örneği): video akışı sensörü
-    /// uyandırır, akış "streaming" olunca fotoğraf yeteneği (`Camera.photo`)
-    /// başlatılır, kare onun üzerinden istenir ve `photoDataPublisher`'a gelir.
-    /// Önceden yalnız akışın eski `capturePhoto(format:)` çağrısı kullanılıyordu;
-    /// gözlüğün ışığı yanıyor ama kare hiç gelmiyordu.
-    ///
-    /// Birleştirme notu (Codex dalı ile): Codex akış açıkken `Camera.photo` çakışıyor diye
-    /// yalnız akış yoluna dönmüştü. Meta'nın resmî örneği (BirdSpotter) tersini yapıyor:
-    /// akış sensörü uyandırır, fotoğraf yeteneği başlayınca akış **kapatılır** (kare ve
-    /// fotoğraf aynı sensörü paylaşamaz), sonra fotoğraf istenir. Burada o sıra korunur;
-    /// Codex'in akış yolu zaten yedek olarak aşağıda duruyor. Geçici bir hata olursa
-    /// oturum sıfırlanıp bir kez daha denenir.
+    /// Önce son başarılı yol denenir; `captureFailed`/`rejected` olursa oturum
+    /// sıfırlanıp diğer yol bir kez denenir ve çalışan yol hatırlanır. Böylece
+    /// donanımda hangisi çalışıyorsa uygulama kendiliğinden ona oturur.
     func capturePhoto() async throws -> Data {
+        let first = preferredPath
         do {
-            return try await captureOnce()
+            let data = try await captureOnce(path: first)
+            preferredPath = first
+            return data
         } catch let error as GlassesError {
             switch error {
             case .captureFailed, .rejected:
                 try? await Task.sleep(nanoseconds: 1_200_000_000)
-                return try await captureOnce()
+                let data = try await captureOnce(path: first.other)
+                preferredPath = first.other
+                return data
             default:
                 throw error
             }
         }
     }
 
-    private func captureOnce() async throws -> Data {
+    private func captureOnce(path: CapturePath) async throws -> Data {
         if session == nil { await connect() }
         guard let session else { throw GlassesError.notConnected }
         guard pendingCapture == nil else { throw GlassesError.busy }
@@ -395,24 +417,35 @@ final class GlassesService: ObservableObject {
         state = .capturing
         defer { if self.session != nil { state = .ready } }
 
+        activePath = path
         let camera = try attachCamera(to: session)
-        // Akış yalnız sensörü uyandırmak için; fotoğraf yeteneği başlayınca durdurulur.
-        if !photoStarted { camera.stream.start() }
-        await waitForPhotoStart(seconds: 8)
-        // Akış kapanırken sensörü bir an daha tutar; ondan önce istenen fotoğraf
-        // ~100 ms'de ve tek bayt gelmeden reddediliyor (Meta örneğindeki not).
-        if photoStarted { await waitForStreamStopped(seconds: 2) }
+        if !streamReady, !photoStarted { camera.stream.start() }
+
+        if path == .photo {
+            await waitForPhotoStart(seconds: 8)
+            // Akış kapanırken sensörü bir an daha tutar; ondan önce istenen fotoğraf
+            // ~100 ms'de ve tek bayt gelmeden reddediliyor (Meta örneğindeki not).
+            if photoStarted { await waitForStreamStopped(seconds: 2) }
+            guard photoStarted else {
+                await disconnect()
+                throw GlassesError.rejected
+            }
+        } else {
+            await waitForStream(seconds: 8)
+            guard streamReady else {
+                await disconnect()
+                throw GlassesError.rejected
+            }
+        }
 
         captureGeneration += 1
         let generation = captureGeneration
-        let usePhoto = photoStarted
 
-        return try await withCheckedThrowingContinuation { continuation in
+        let data: Data = try await withCheckedThrowingContinuation { continuation in
             pendingCapture = continuation
-            if usePhoto {
+            if path == .photo {
                 camera.photo.capturePhoto(resolution: .medium, quality: .medium)
             } else {
-                // Fotoğraf yeteneği başlamadıysa eski yol: akıştan kare iste.
                 Task { [weak self] in await self?.requestFrame(camera, generation: generation) }
             }
             // Gözlük kareyi hiç göndermezse (menzil dışı, pil, uyku) devam
@@ -422,6 +455,12 @@ final class GlassesService: ObservableObject {
                 await self?.failCaptureIfPending(generation: generation)
             }
         }
+        if path == .stream {
+            // Kare alındı: akış açık kalıp gözlük pilini boşa harcamasın.
+            camera.stream.stop()
+            streamReady = false
+        }
+        return data
     }
 
     /// Kamerayı oturum boyunca bir kez ekler ve dinleyicilerini kurar.
@@ -439,6 +478,7 @@ final class GlassesService: ObservableObject {
         camera = added
         photoStarted = false
         photoStartRequested = false
+        streamReady = false
 
         // Dinleyiciler kare istenmeden ÖNCE kurulur: photoDataPublisher geçmişi
         // tekrar oynatmıyor, sonradan kurulan dinleyici kareyi kaçırabilir.
@@ -466,10 +506,23 @@ final class GlassesService: ObservableObject {
     }
 
     private func streamStateChanged(_ text: String) {
-        // Sensör uyandı: fotoğraf yeteneği artık başlatılabilir (bir kez).
-        guard text.hasSuffix("streaming"), !photoStartRequested, let camera else { return }
-        photoStartRequested = true
-        camera.photo.start()
+        if text.hasSuffix("streaming") {
+            streamReady = true
+            // Sensör uyandı: `photo` yolunda fotoğraf yeteneği artık başlatılabilir (bir kez).
+            guard activePath == .photo, !photoStartRequested, let camera else { return }
+            photoStartRequested = true
+            camera.photo.start()
+        } else if text.hasSuffix("stopped") || text.hasSuffix("stopping") {
+            streamReady = false
+        }
+    }
+
+    /// Akış `streaming` olana kadar bekler (en fazla `seconds`).
+    private func waitForStream(seconds: Double) async {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !streamReady, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
     }
 
     private func photoStateChanged(_ text: String) {

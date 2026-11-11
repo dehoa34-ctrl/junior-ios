@@ -8,7 +8,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "1.4.0"
-    CURRENT_PROJECT_VERSION: "12"
+    CURRENT_PROJECT_VERSION: "13"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
@@ -48,18 +48,18 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         # Izin metinleri kullaniciya aynen gosterilir; Turkce ve acik olmali.
-        NSMicrophoneUsageDescription: Junior'a konusabilmen icin mikrofon gerekiyor.
+        NSMicrophoneUsageDescription: "Junior'a konuşabilmen için ve 'Telefonda sürekli dinle' açıkken konuşmaları kaydedip kendi bilgisayarına yüklemek için mikrofon gerekiyor."
         NSSpeechRecognitionUsageDescription: Soylediklerini yaziya cevirmek icin konusma tanima gerekiyor.
         NSCameraUsageDescription: "\"Bu ne\" gibi sorularda gonderdigin fotografi cekmek icin kamera gerekiyor."
         NSPhotoLibraryUsageDescription: Var olan bir fotografi Junior'a sormak icin galeri erisimi gerekiyor.
         NSPhotoLibraryAddUsageDescription: Junior'in bilgisayarda kurguladigi videoyu Fotograflar'a kaydetmek icin gerekiyor.
-        # Telefon eylemleri: "annemi ara", "yarin 9'a hatirlat", "takvime ekle", "Apple Muzik'te cal".
-        NSContactsUsageDescription: "\"Ali'yi ara\" gibi isteklerde kisiyi rehberinde bulmak icin gerekiyor."
-        NSRemindersFullAccessUsageDescription: Hatirlatici eklemek icin Hatirlaticilar erisimi gerekiyor.
-        NSRemindersUsageDescription: Hatirlatici eklemek icin Hatirlaticilar erisimi gerekiyor.
-        NSCalendarsFullAccessUsageDescription: Takvime etkinlik eklemek icin Takvim erisimi gerekiyor.
-        NSCalendarsUsageDescription: Takvime etkinlik eklemek icin Takvim erisimi gerekiyor.
-        NSAppleMusicUsageDescription: Apple Muzik kitapligindaki sarkilari calmak icin gerekiyor.
+        # Telefon eylemleri: "annemi ara", "yarın 9'a hatırlat", "takvime ekle", "Apple Müzik'te çal".
+        NSContactsUsageDescription: "\"Ali'yi ara\" gibi isteklerde kişiyi rehberinde bulmak için gerekiyor."
+        NSRemindersFullAccessUsageDescription: Hatırlatıcı eklemek için Hatırlatıcılar erişimi gerekiyor.
+        NSRemindersUsageDescription: Hatırlatıcı eklemek için Hatırlatıcılar erişimi gerekiyor.
+        NSCalendarsFullAccessUsageDescription: Takvime etkinlik eklemek için Takvim erişimi gerekiyor.
+        NSCalendarsUsageDescription: Takvime etkinlik eklemek için Takvim erişimi gerekiyor.
+        NSAppleMusicUsageDescription: Apple Müzik kitaplığındaki şarkıları çalmak için gerekiyor.
         # Kurgulanan videolar Dosyalar uygulamasinda da gorunsun (Junior klasoru).
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

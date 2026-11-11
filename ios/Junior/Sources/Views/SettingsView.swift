@@ -10,6 +10,8 @@ struct SettingsView: View {
     @State private var tokenDraft = ""
     @State private var testResult: String?
     @State private var testing = false
+    @State private var permissionResult: String?
+    @State private var askingPermissions = false
 
     var body: some View {
         NavigationStack {
@@ -103,6 +105,29 @@ struct SettingsView: View {
                 }
 
                 LiveSettingsSection(config: config, live: live)
+
+                Section {
+                    Button {
+                        askingPermissions = true
+                        permissionResult = nil
+                        Task {
+                            permissionResult = await PhoneActionService.shared.requestAllPermissions()
+                            askingPermissions = false
+                        }
+                    } label: {
+                        Label("Telefon eylemleri izinlerini ver", systemImage: "checkmark.shield.fill")
+                    }
+                    .disabled(askingPermissions)
+                    if let permissionResult {
+                        Text(permissionResult).font(.footnote).foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Telefon eylemleri")
+                } footer: {
+                    Text("Hatırlatıcı, takvim, zamanlayıcı, rehber ve Apple Müzik izinlerini bir seferde sorar. "
+                         + "iOS izin penceresini yalnız uygulama açıkken gösterebilir; telefon cepteyken sorulan "
+                         + "ilk istek bu yüzden yapılamaz. Bir kez vermen yeterli.")
+                }
 
                 Section {
                     Toggle(isOn: $config.naturalVoiceEnabled) {
