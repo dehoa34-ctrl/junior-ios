@@ -13,6 +13,7 @@ final class Config: ObservableObject {
         static let continuous = "junior.continuousConversation"
         static let serverRecognition = "junior.serverRecognition"
         static let phoneLive = "junior.phoneLive"
+        static let allDayRecording = "junior.allDayRecording"
         static let tokenAccessMigrated = "junior.tokenAccessAfterFirstUnlock"
     }
 
@@ -85,6 +86,15 @@ final class Config: ObservableObject {
         didSet { UserDefaults.standard.set(phoneLiveEnabled, forKey: Keys.phoneLive) }
     }
 
+    /// Gün boyu ses kaydı yalnız kullanıcı açıkça seçerse etkinleşir. Kayıtlar
+    /// telefonun Files uygulamasındaki JuniorRecordings klasöründe yereldir.
+    @Published var allDayRecordingEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(allDayRecordingEnabled, forKey: Keys.allDayRecording)
+            MicrophoneHub.shared.setAllDayRecording(allDayRecordingEnabled)
+        }
+    }
+
     init() {
         // Varsayilan yok: adres kisiye ozel. Bos birakilinca uygulama
         // "sunucu adresi eksik" uyarisini gosterip Ayarlar'a goturuyor.
@@ -106,6 +116,7 @@ final class Config: ObservableObject {
         headsetMicEnabled = (UserDefaults.standard.object(forKey: MicrophoneHub.headsetMicKey) as? Bool) ?? true
         serverRecognitionEnabled = (UserDefaults.standard.object(forKey: Keys.serverRecognition) as? Bool) ?? true
         phoneLiveEnabled = (UserDefaults.standard.object(forKey: Keys.phoneLive) as? Bool) ?? false
+        allDayRecordingEnabled = (UserDefaults.standard.object(forKey: Keys.allDayRecording) as? Bool) ?? false
         liveActivityEnabled = (UserDefaults.standard.object(forKey: JuniorLiveActivity.enabledKey) as? Bool) ?? true
         #if DEBUG
         DemoMode.prepare(self)

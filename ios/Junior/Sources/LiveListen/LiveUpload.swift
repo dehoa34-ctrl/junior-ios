@@ -34,6 +34,40 @@ enum LiveUploadOutcome: Equatable {
     case unsupported
 }
 
+/// "Gün boyu yerel kayıt"ın Files > JuniorRecordings içine yazdığı 60 sn'lik WAV
+/// dosyalarını yükleme kuyruğuna çevirir. Saf mantık; dosya ya da ağ yok.
+///
+/// Dosya adı `junior-<sn>-<ms>-<8 karakter>.wav`: damga parçanın **bittiği** an.
+/// Başlangıç, WAV boyundan hesaplanır (16 kHz, 16 bit, tek kanal, 44 bayt başlık).
+/// Kimlik dosyadan türetilir; aynı dosya iki kez gönderilse sunucuda tek kalır.
+enum LocalRecording {
+    struct Parsed: Equatable {
+        let id: String
+        let t0: Int64
+        let t1: Int64
+    }
+
+    static let headerBytes = 44
+    static let bytesPerSecond = 32_000
+
+    static func parse(fileName: String, byteCount: Int) -> Parsed? {
+        guard fileName.hasPrefix("junior-"), fileName.hasSuffix(".wav") else { return nil }
+        let stem = fileName.dropFirst("junior-".count).dropLast(".wav".count)
+        let parts = stem.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              let seconds = Int64(parts[0]), let millis = Int64(parts[1]), (0..<1000).contains(millis),
+              parts[2].count >= 8, parts[2].allSatisfy({ $0.isHexDigit }) else { return nil }
+        let samplesBytes = byteCount - headerBytes
+        guard samplesBytes > 0 else { return nil }
+        let t1 = seconds * 1000 + millis
+        // Sunucu en çok 60 sn kabul eder; parça biraz taşmış olabilir.
+        let duration = min(60_000, Int64(samplesBytes) * 1000 / Int64(bytesPerSecond))
+        let t0 = t1 - max(1, duration)
+        let suffix = parts[2].prefix(8).lowercased()
+        return Parsed(id: "ph-\(t0)-\(suffix)", t0: t0, t1: t1)
+    }
+}
+
 enum LiveUpload {
     static let path = "/v1/live/segment"
 

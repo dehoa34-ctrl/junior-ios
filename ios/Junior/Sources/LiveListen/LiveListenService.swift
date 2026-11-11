@@ -281,6 +281,68 @@ final class LiveListenService: ObservableObject {
 
     func dismissWarning() { warning = nil }
 
+    // MARK: - Yerel kayıtları bilgisayara gönder
+
+    /// Son "yerel kayıtları gönder" sonucu (arayüzde gösterilir).
+    @Published private(set) var importSummary: String?
+    @Published private(set) var importing = false
+
+    /// Files > JuniorRecordings içindeki WAV parçalarını yükleme kuyruğuna alır;
+    /// alınanlar `gonderildi` alt klasörüne taşınır (silinmez). Yükleme, her zamanki
+    /// yükleyiciyle yapılır; bilgisayar kapalıysa parçalar telefonda bekler.
+    func importLocalRecordings() {
+        guard !importing else { return }
+        importing = true
+        importSummary = nil
+        let queue = self.queue
+        Task {
+            let result = await Task.detached(priority: .utility) { Self.importFiles(into: queue) }.value
+            importing = false
+            refreshCounts()
+            startUploaderIfNeeded()
+            importSummary = result.summary
+        }
+    }
+
+    fileprivate struct ImportResult: Sendable {
+        var queued = 0
+        var skipped = 0
+        var failed = 0
+        var summary: String {
+            if queued == 0 && failed == 0 { return skipped > 0 ? "Gönderilecek yeni kayıt yok." : "JuniorRecordings klasöründe kayıt yok." }
+            var text = "\(queued) kayıt gönderim sırasına alındı."
+            if failed > 0 { text += " \(failed) kayıt okunamadı." }
+            return text
+        }
+    }
+
+    private nonisolated static func importFiles(into queue: LiveQueue) -> ImportResult {
+        var result = ImportResult()
+        let fm = FileManager.default
+        let documents = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let folder = documents.appendingPathComponent("JuniorRecordings", isDirectory: true)
+        let done = folder.appendingPathComponent("gonderildi", isDirectory: true)
+        guard let names = try? fm.contentsOfDirectory(atPath: folder.path) else { return result }
+        for name in names.sorted() where name.hasSuffix(".wav") {
+            let url = folder.appendingPathComponent(name)
+            guard let data = try? Data(contentsOf: url) else { result.failed += 1; continue }
+            guard let parsed = LocalRecording.parse(fileName: name, byteCount: data.count) else {
+                result.skipped += 1
+                continue
+            }
+            guard queue.enqueue(id: parsed.id, audio: data, ext: "wav", t0: parsed.t0, t1: parsed.t1, rms: nil) != nil else {
+                result.failed += 1
+                continue
+            }
+            try? fm.createDirectory(at: done, withIntermediateDirectories: true)
+            try? fm.removeItem(at: done.appendingPathComponent(name))
+            // Kuyruğa alındı; taşınamasa bile aynı kimlik yeniden gönderilince sunucuda tek kalır.
+            try? fm.moveItem(at: url, to: done.appendingPathComponent(name))
+            result.queued += 1
+        }
+        return result
+    }
+
     // MARK: - Metinler
 
     var statusTitle: String {

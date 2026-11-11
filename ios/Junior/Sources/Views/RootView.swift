@@ -72,6 +72,9 @@ struct RootView: View {
             }
             #endif
             handsFree.continuousEnabled = config.continuousEnabled
+            // Uygulama yeniden açıldığında daha önce açıkça etkinleştirilmiş
+            // yerel kayıt tercihini aynı mikrofon motoruna geri bağla.
+            MicrophoneHub.shared.setAllDayRecording(config.allDayRecordingEnabled)
             syncWakeWord()
             wireNaturalVoice()
             wireRecognition()
@@ -102,6 +105,9 @@ struct RootView: View {
             if config.phoneLiveEnabled, live.paused { live.paused = false } else { live.sync() }
         }
         .onChange(of: config.serverRecognitionEnabled) { wireRecognition() }
+        .onChange(of: config.allDayRecordingEnabled) {
+            MicrophoneHub.shared.setAllDayRecording(config.allDayRecordingEnabled)
+        }
         // Ayarlar kapaninca yeni adresle hemen bakilir; yoksa uyari eski
         // (bos) adresin sonucunu gosterip "Yeniden dene"yi bekliyordu.
         .onChange(of: showSettings) {

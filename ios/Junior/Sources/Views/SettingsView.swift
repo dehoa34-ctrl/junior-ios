@@ -93,6 +93,9 @@ struct SettingsView: View {
                     Toggle(isOn: $config.serverRecognitionEnabled) {
                         Label { Text("Doğru tanıma (sunucu)") } icon: { SettingIcon(systemName: "waveform.badge.magnifyingglass", color: JuniorTheme.green) }
                     }
+                    Toggle(isOn: $config.allDayRecordingEnabled) {
+                        Label { Text("Gün boyu yerel kayıt") } icon: { SettingIcon(systemName: "record.circle", color: JuniorTheme.red) }
+                    }
                 } header: {
                     Text("Dinleme")
                 } footer: {
@@ -101,7 +104,10 @@ struct SettingsView: View {
                          + "Gözlük mikrofonu açıkken gözlük bağlanınca mikrofon ondan alınır; telefon cepteyken "
                          + "gözlükten \"Junior\" demek için gerekli (ses bu sırada telefon görüşmesi kalitesinde çalar). "
                          + "Doğru tanıma açıkken söylediğin bilgisayardaki whisper ile yazıya çevrilir; "
-                         + "ulaşılamazsa iPhone'un kendi tanıması kullanılır.")
+                         + "ulaşılamazsa iPhone'un kendi tanıması kullanılır. Gün boyu yerel kayıt açıkken "
+                         + "ses 60 saniyelik WAV parçaları olarak Files > JuniorRecordings içine yazılır; "
+                         + "Claude'a veya NVIDIA'ya otomatik gönderilmez. Telefon görüşmesi, Siri veya uygulamayı "
+                         + "zorla kapatma kaydı geçici olarak durdurabilir.")
                 }
 
                 LiveSettingsSection(config: config, live: live)

@@ -101,6 +101,16 @@ struct LiveSettingsSection: View {
                     }
                 }
             }
+            Button {
+                live.importLocalRecordings()
+            } label: {
+                Label(live.importing ? "Gönderiliyor…" : "Yerel kayıtları bilgisayara gönder",
+                      systemImage: "arrow.up.doc.fill")
+            }
+            .disabled(live.importing)
+            if let summary = live.importSummary {
+                Text(summary).font(.footnote).foregroundStyle(.secondary)
+            }
         } header: {
             Text("Sürekli dinleme")
         } footer: {
@@ -109,7 +119,9 @@ struct LiveSettingsSection: View {
                  + "ayrımı ve arşiv bilgisayarda yapılır, ses başka hiçbir yere gönderilmez. Bilgisayar kapalıysa "
                  + "parçalar telefonda birikir (en çok 1,5 GB; dolunca en eskiler silinir). Telefon görüşmesi ya da "
                  + "Siri mikrofonu keser, bitince kendiliğinden devam eder. Konuştuğun kişilerin kaydedildiğini "
-                 + "bilmesi gerekebilir; yasalar ülkeden ülkeye değişir.")
+                 + "bilmesi gerekebilir; yasalar ülkeden ülkeye değişir. \"Gün boyu yerel kayıt\" ile Files'a yazılan "
+                 + "WAV'lar da \"Yerel kayıtları bilgisayara gönder\" ile yüklenir; bilgisayar gürültüyü ayıklayıp "
+                 + "yalnız konuşmayı yazıya çevirir.")
         }
     }
 }

@@ -254,6 +254,29 @@ final class LiveEncoderTests: XCTestCase {
         }
     }
 
+    func testLocalRecordingNameParsesToWindowEndingAtStamp() {
+        // 60 sn = 1_920_000 bayt PCM + 44 bayt başlık
+        let parsed = LocalRecording.parse(fileName: "junior-1762881234-567-ABCDEF12.wav", byteCount: 1_920_044)
+        XCTAssertEqual(parsed?.t1, 1_762_881_234_567)
+        XCTAssertEqual(parsed?.t0, 1_762_881_234_567 - 60_000)
+        XCTAssertEqual(parsed?.id, "ph-\(1_762_881_234_567 - 60_000)-abcdef12")
+        XCTAssertGreaterThanOrEqual(parsed?.id.count ?? 0, 16)
+    }
+
+    func testLocalRecordingShortAndOversizedChunks() {
+        XCTAssertEqual(LocalRecording.parse(fileName: "junior-100000-000-ABCDEF12.wav", byteCount: 32_044)?.t0, 100_000_000 - 1000)
+        // Biraz taşan parça 60 sn'ye kırpılır (sunucu sınırı).
+        let long = LocalRecording.parse(fileName: "junior-100000-000-ABCDEF12.wav", byteCount: 1_930_044)
+        XCTAssertEqual((long?.t1 ?? 0) - (long?.t0 ?? 0), 60_000)
+    }
+
+    func testLocalRecordingRejectsForeignNames() {
+        XCTAssertNil(LocalRecording.parse(fileName: "notlar.wav", byteCount: 5000))
+        XCTAssertNil(LocalRecording.parse(fileName: "junior-abc-1-ABCDEF12.wav", byteCount: 5000))
+        XCTAssertNil(LocalRecording.parse(fileName: "junior-1762881234-567-ABCDEF12.wav", byteCount: 44))
+        XCTAssertNil(LocalRecording.parse(fileName: "junior-1762881234-567-XYZ.wav", byteCount: 5000))
+    }
+
     func testEmptySegmentIsNotEncoded() {
         XCTAssertNil(LiveEncoder.encode(LiveSegment(samples: [], t0: 1, t1: 2, rms: 0)))
     }

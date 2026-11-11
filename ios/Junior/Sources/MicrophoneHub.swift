@@ -13,6 +13,7 @@ final class RequestBox: @unchecked Sendable {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var capture: PCMCapture?
     private var live: LiveTap?
+    private var recorder: AllDayRecorder?
 
     func set(_ value: SFSpeechAudioBufferRecognitionRequest?, capture: PCMCapture? = nil) {
         lock.lock(); defer { lock.unlock() }
@@ -34,15 +35,27 @@ final class RequestBox: @unchecked Sendable {
         tap?.flush()
     }
 
+    func setRecorder(_ value: AllDayRecorder?) {
+        lock.lock(); defer { lock.unlock() }
+        recorder = value
+    }
+
+    var hasConsumer: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return request != nil || capture != nil
+    }
+
     func append(_ buffer: AVAudioPCMBuffer) {
         lock.lock()
         let current = request
         let copy = capture
         let tap = live
+        let allDay = recorder
         lock.unlock()
         current?.append(buffer)
         copy?.append(buffer)
         tap?.append(buffer)
+        allDay?.append(buffer)
     }
 }
 
@@ -122,6 +135,96 @@ enum WAVFile {
     }
 }
 
+/// Gün boyu kayıt için küçük, yerel WAV parçaları üretir.
+///
+/// Bu sınıf ses verisini bellekte günlerce tutmaz: her 60 saniyede bir dosyayı
+/// `Documents/JuniorRecordings` içine yazar ve yeni parçaya geçer. Ses, bu
+/// kayıt özelliği açıkça etkinleştirilmedikçe hiçbir zaman bu sınıfa ulaşmaz.
+final class AllDayRecorder: @unchecked Sendable {
+    static let sampleRate = 16_000.0
+    private static let chunkSeconds = 60.0
+    private let lock = NSLock()
+    private let writeQueue = DispatchQueue(label: "xyz.jrbilge.junior.all-day-recording", qos: .utility)
+    private let directory: URL
+    private let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sampleRate,
+                                       channels: 1, interleaved: true)
+    private var converter: AVAudioConverter?
+    private var source: AVAudioFormat?
+    private var pcm = Data()
+    private var stopped = false
+
+    init() {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        directory = documents.appendingPathComponent("JuniorRecordings", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        var completed: Data?
+        lock.lock()
+        guard !stopped, let target, buffer.frameLength > 0, buffer.format.sampleRate > 0 else {
+            lock.unlock()
+            return
+        }
+        if converter == nil || source != buffer.format {
+            converter = AVAudioConverter(from: buffer.format, to: target)
+            source = buffer.format
+        }
+        if let converter {
+            let capacity = AVAudioFrameCount(Double(buffer.frameLength) * Self.sampleRate / buffer.format.sampleRate) + 64
+            if let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) {
+                var fed = false
+                var error: NSError?
+                _ = converter.convert(to: out, error: &error) { _, status in
+                    if fed {
+                        status.pointee = .noDataNow
+                        return nil
+                    }
+                    fed = true
+                    status.pointee = .haveData
+                    return buffer
+                }
+                if error == nil, out.frameLength > 0, let channel = out.int16ChannelData {
+                    pcm.append(Data(bytes: channel[0], count: Int(out.frameLength) * 2))
+                }
+            }
+        }
+        let maxBytes = Int(Self.chunkSeconds * Self.sampleRate * 2)
+        if pcm.count >= maxBytes {
+            completed = pcm
+            pcm.removeAll(keepingCapacity: true)
+        }
+        lock.unlock()
+        if let completed { enqueue(completed) }
+    }
+
+    func stop() {
+        var completed: Data?
+        lock.lock()
+        guard !stopped else { lock.unlock(); return }
+        stopped = true
+        if !pcm.isEmpty { completed = pcm; pcm.removeAll(keepingCapacity: false) }
+        lock.unlock()
+        if let completed {
+            enqueue(completed)
+            writeQueue.sync {}
+        }
+    }
+
+    private func enqueue(_ body: Data) {
+        guard !body.isEmpty else { return }
+        writeQueue.async { [directory] in
+            let stamp = String(format: "%.3f", Date().timeIntervalSince1970).replacingOccurrences(of: ".", with: "-")
+            let url = directory.appendingPathComponent("junior-\(stamp)-\(UUID().uuidString.prefix(8)).wav")
+            do {
+                try WAVFile.pcm16(body, sampleRate: Int(Self.sampleRate)).write(to: url, options: .atomic)
+            } catch {
+                NSLog("Junior yerel kayıt yazılamadı: %@", String(describing: error))
+            }
+        }
+    }
+}
+
 enum MicrophoneError: Error {
     /// Donanım o an giriş vermiyor (Bluetooth yolu değişirken olabiliyor).
     case noInput
@@ -154,6 +257,8 @@ final class MicrophoneHub {
     /// Telefonda sürekli dinleme açık mı. Açıkken motor, uyandırma ve konuşma
     /// tanıma bıraksa bile kapanmaz; yalnız kullanıcı kapatınca/duraklatınca kapanır.
     private var liveWanted = false
+    private var allDayRecordingWanted = false
+    private var allDayRecorder: AllDayRecorder?
     private var observers: [NSObjectProtocol] = []
     private var retryTask: Task<Void, Never>?
 
@@ -164,7 +269,7 @@ final class MicrophoneHub {
 
     /// Mikrofon bir servis tarafından tutuluyor mu (o an motor durmuş olsa bile).
     /// Seslendirme bunu sorar: tutulurken ses kategorisi değiştirilmemeli.
-    var isWanted: Bool { wanted || liveWanted }
+    var isWanted: Bool { wanted || liveWanted || allDayRecordingWanted }
 
     private init() {
         let center = NotificationCenter.default
@@ -233,6 +338,26 @@ final class MicrophoneHub {
         box.set(request, capture: capture)
     }
 
+    /// Gün boyu yerel kayıt için aynı ses tap'ine bir kayıt tüketicisi ekler.
+    /// Uyandırma/konuşma durdurulsa bile motor bu tüketici için açık kalır.
+    func setAllDayRecording(_ enabled: Bool) {
+        if enabled {
+            allDayRecordingWanted = true
+            if allDayRecorder == nil { allDayRecorder = AllDayRecorder() }
+            box.setRecorder(allDayRecorder)
+            do { try start() } catch { recover() }
+            return
+        }
+        allDayRecordingWanted = false
+        box.setRecorder(nil)
+        allDayRecorder?.stop()
+        allDayRecorder = nil
+        // Konuşma/uyandırma tanıması ya da sürekli dinleme hâlâ tüketici ise motoru bırakma.
+        guard !box.hasConsumer, !liveWanted else { return }
+        wanted = false
+        stopEngine()
+    }
+
     /// Gözlük bağlıysa mikrofonu ondan alır.
     ///
     /// `.allowBluetoothA2DP` açıkken iOS yanıtı gözlüğe A2DP ile çalıyor ama
@@ -266,11 +391,11 @@ final class MicrophoneHub {
     /// Mikrofonu gerçekten bırakır. Yalnız uyandırma tamamen kapatılırken ya da
     /// uyandırma kapalıyken tur bittiğinde çağrılmalı.
     func stop() {
-        wanted = false
+        wanted = allDayRecordingWanted
         retryTask?.cancel()
         box.set(nil)
-        // Sürekli dinleme açıksa mikrofon bırakılmaz; yalnız tanıma bırakıldı.
-        guard !liveWanted else {
+        // Sürekli dinleme ya da gün boyu kayıt açıksa mikrofon bırakılmaz; yalnız tanıma bırakıldı.
+        guard !liveWanted, !allDayRecordingWanted else {
             recover()
             return
         }
@@ -315,7 +440,7 @@ final class MicrophoneHub {
     func disableLive() {
         liveWanted = false
         box.setLive(nil)
-        guard !wanted else {
+        guard !wanted, !allDayRecordingWanted else {
             try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .spokenAudio, options: categoryOptions)
             return
         }
@@ -358,7 +483,7 @@ final class MicrophoneHub {
         do {
             try startEngine()
         } catch {
-            guard attempt < 5 || liveWanted else { return }
+            guard attempt < 5 || liveWanted || allDayRecordingWanted else { return }
             let seconds = min(30, 2 * (attempt + 1))
             retryTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
