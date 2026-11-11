@@ -43,7 +43,18 @@ struct AskJuniorIntent: AppIntent {
             let response = try await client.send(url: settings.url, token: settings.token,
                                                  message: question, history: [],
                                                  image: nil, target: nil)
-            return .result(dialog: IntentDialog(stringLiteral: response.reply))
+            var spoken = response.reply
+            // Sunucu işi telefona bıraktıysa (hatırlatıcı, zamanlayıcı …) burada yapılır.
+            // Uygulama öne gelmediği için ön plan isteyenler dokunulacak bildirim bırakır.
+            if response.status == .phoneAction {
+                if let action = response.phoneAction, let payload = response.phoneActionPayload {
+                    let result = await PhoneActionService.shared.perform(action, payload: payload, retryText: question)
+                    if let message = result.message { spoken = message }
+                } else {
+                    spoken = "Bunu telefonda nasıl yapacağımı anlayamadım."
+                }
+            }
+            return .result(dialog: IntentDialog(stringLiteral: spoken))
         } catch let error as JuniorError {
             throw JuniorIntentError.failed(error.errorDescription ?? "Junior yanıt vermedi.")
         }

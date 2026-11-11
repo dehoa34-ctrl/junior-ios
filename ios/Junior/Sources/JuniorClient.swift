@@ -137,15 +137,15 @@ actor JuniorClient {
         let error = parsed["error"] as? [String: Any]
         let speech = (parsed["speech"] as? [Any])?.compactMap { $0 as? String }.filter { !$0.isEmpty } ?? []
         let status = CommandStatus(raw: parsed["status"] as? String)
-        var response = CommandResponse(reply: reply.isEmpty ? "Junior bos yanit dondurdu." : reply,
+        var result = CommandResponse(reply: reply.isEmpty ? "Junior bos yanit dondurdu." : reply,
                                        status: status,
                                        errorCode: error?["code"] as? String,
                                        speech: reply.isEmpty ? [] : speech)
         if status == .phoneAction, let payload = parsed["phone_action"] as? [String: Any] {
-            response.phoneActionPayload = payload
-            response.phoneAction = PhoneAction.parse(payload)
+            result.phoneActionPayload = payload
+            result.phoneAction = PhoneAction.parse(payload)
         }
-        return response
+        return result
     }
 
     /// Sunucu ayakta mi. Token istemez ve hizli doner; konusmadan **once**
