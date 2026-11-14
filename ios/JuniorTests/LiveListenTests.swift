@@ -290,7 +290,8 @@ final class LiveEncoderTests: XCTestCase {
         XCTAssertGreaterThan(recorder.bufferedBytes, 16_000, "dönüştürücü ses üretmedi")
 
         recorder.flushPartial()
-        wait(for: [wrote], timeout: 5)
+        // Yazma düşük öncelikli bir kuyrukta; yüklü CI makinesinde saniyeler sürebiliyor.
+        wait(for: [wrote], timeout: 30)
         XCTAssertNotNil(recorder.lastWrite)
         let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".wav") }
         XCTAssertEqual(names.count, 1)
