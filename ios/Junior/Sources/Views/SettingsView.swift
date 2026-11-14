@@ -120,6 +120,16 @@ struct SettingsView: View {
                 LiveSettingsSection(config: config, live: live)
 
                 Section {
+                    NavigationLink {
+                        RoutinesView(config: config)
+                    } label: {
+                        Label { Text("Rutinler ve sessiz saatler") } icon: { SettingIcon(systemName: "calendar.badge.clock", color: JuniorTheme.violet) }
+                    }
+                } footer: {
+                    Text("Hatırlatmalar, brifing ve kendiliğinden çalışan işler; bilgisayardaki Junior ile ortak liste.")
+                }
+
+                Section {
                     Button {
                         askingPermissions = true
                         permissionResult = nil

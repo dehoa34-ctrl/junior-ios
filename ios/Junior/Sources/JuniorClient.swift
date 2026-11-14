@@ -207,6 +207,21 @@ actor JuniorClient {
         return (parsed?["providers"] as? [Any])?.compactMap { $0 as? String } ?? []
     }
 
+    /// Küçük JSON uçları (rutinler vb.): isteği gönderir, yanıt verisini döndürür.
+    func json(method: String, url: URL, token: String, body: [String: Any]? = nil) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 15
+        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+        let (data, response) = try await perform(request)
+        try check(response: response, data: data)
+        return data
+    }
+
     /// Bilgisayardaki Junior'in telefona biraktigi isler; alinanlar sunucudan duser.
     func phoneTasks(url: URL, token: String) async throws -> [PhoneTask] {
         var request = URLRequest(url: url)
