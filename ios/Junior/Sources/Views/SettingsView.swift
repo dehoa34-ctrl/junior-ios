@@ -125,8 +125,13 @@ struct SettingsView: View {
                     } label: {
                         Label { Text("Rutinler ve sessiz saatler") } icon: { SettingIcon(systemName: "calendar.badge.clock", color: JuniorTheme.violet) }
                     }
+                    NavigationLink {
+                        MemoryView(config: config)
+                    } label: {
+                        Label { Text("Hafıza") } icon: { SettingIcon(systemName: "brain.head.profile", color: JuniorTheme.cyan) }
+                    }
                 } footer: {
-                    Text("Hatırlatmalar, brifing ve kendiliğinden çalışan işler; bilgisayardaki Junior ile ortak liste.")
+                    Text("Hatırlatmalar, brifing ve kendiliğinden çalışan işler ile Junior’ın senin hakkında hatırladıkları; bilgisayardaki Junior ile ortaktır.")
                 }
 
                 Section {
