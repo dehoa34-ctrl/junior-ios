@@ -164,7 +164,7 @@ final class TasksModel: ObservableObject {
         }
     }
 
-    static func fileName(for task: BackgroundTask) -> String {
+    nonisolated static func fileName(for task: BackgroundTask) -> String {
         let allowed = CharacterSet.alphanumerics
         let slug = task.goal.lowercased().unicodeScalars.map { allowed.contains($0) ? String($0) : "-" }.joined()
             .split(separator: "-").prefix(6).joined(separator: "-")
