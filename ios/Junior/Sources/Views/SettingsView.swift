@@ -126,6 +126,11 @@ struct SettingsView: View {
                         Label { Text("Rutinler ve sessiz saatler") } icon: { SettingIcon(systemName: "calendar.badge.clock", color: JuniorTheme.violet) }
                     }
                     NavigationLink {
+                        TasksView(config: config)
+                    } label: {
+                        Label { Text("Görevler ve araştırmalar") } icon: { SettingIcon(systemName: "sparkle.magnifyingglass", color: JuniorTheme.green) }
+                    }
+                    NavigationLink {
                         MemoryView(config: config)
                     } label: {
                         Label { Text("Hafıza") } icon: { SettingIcon(systemName: "brain.head.profile", color: JuniorTheme.cyan) }
