@@ -155,7 +155,10 @@ struct RootView: View {
                 refreshGemini()
             } else if scenePhase == .background {
                 server.pause()
-                phoneTasks.pause()
+                // Mikrofon motoru çalışıyorsa (uyandırma sözcüğü, canlı dinleme) iOS uygulamayı arka planda
+                // canlı tutar: "Haber ver" bildirimleri kilitli telefonda da gelsin diye yoklama sürer.
+                // Mikrofon kapalıysa iOS zaten uygulamayı uyutur; boşuna ağa çıkılmaz.
+                if !MicrophoneHub.shared.isRunning { phoneTasks.pause() }
                 RemoteConfirmCenter.shared.pause()
             }
         }
