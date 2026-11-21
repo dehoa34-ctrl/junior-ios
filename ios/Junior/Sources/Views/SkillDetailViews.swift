@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 // Beceriler ekranının paket sayfaları. Hepsi aynı SkillsModel'i paylaşır; veriler bilgisayardaki
@@ -221,6 +222,11 @@ struct CaloriesSkillView: View {
     @ObservedObject var model: SkillsModel
     @State private var food = ""
     @State private var kcalText = ""
+    @State private var showCamera = false
+    @State private var showLibrary = false
+    @State private var libraryItem: PhotosPickerItem?
+    @State private var mealPhoto: PickedMealPhoto?
+    @State private var photoProblem: String?
 
     var body: some View {
         Form {
@@ -258,6 +264,26 @@ struct CaloriesSkillView: View {
                     }
 
                     Section {
+                        Button {
+                            showCamera = true
+                        } label: {
+                            Label("Fotoğraf çek", systemImage: "camera.fill")
+                        }
+                        Button {
+                            showLibrary = true
+                        } label: {
+                            Label("Galeriden seç", systemImage: "photo.on.rectangle")
+                        }
+                        if let photoProblem {
+                            Text(photoProblem).font(.footnote).foregroundStyle(JuniorTheme.red)
+                        }
+                    } header: {
+                        Text("Fotoğrafla ekle")
+                    } footer: {
+                        Text("Junior yemekleri ve tahmini kaloriyi çıkarır; sen onaylayıp düzeltirsin, sonra “tahmini” diye kaydedilir. Fotoğraf bilgisayara gider ama saklanmaz.")
+                    }
+
+                    Section {
                         if model.calorieEntries.isEmpty {
                             Text("Bugün kayıt yok.").foregroundStyle(.secondary)
                         }
@@ -289,12 +315,44 @@ struct CaloriesSkillView: View {
             SkillNote(text: model.notes[.calories])
         }
         .task(id: model.overview?.enabled(.calories)) { await model.loadCalories() }
+        .sheet(isPresented: $showCamera) {
+            CameraPicker { image in
+                showCamera = false
+                if let image { take(image) }
+            }
+        }
+        .photosPicker(isPresented: $showLibrary, selection: $libraryItem, matching: .images)
+        .onChange(of: libraryItem) {
+            guard let item = libraryItem else { return }
+            Task {
+                defer { libraryItem = nil }
+                guard let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) else {
+                    photoProblem = "Fotoğraf okunamadı. Başka bir kare dene."
+                    return
+                }
+                take(image)
+            }
+        }
+        .sheet(item: $mealPhoto) { photo in
+            CaloriePhotoSheet(model: model, jpeg: photo.jpeg)
+        }
+    }
+
+    /// Fotoğrafı sunucu sınırının (2 MiB) altına küçültüp onay ekranını açar.
+    private func take(_ image: UIImage) {
+        guard let jpeg = image.juniorJPEGData() else {
+            photoProblem = "Fotoğraf küçültülemedi. Başka bir kare dene."
+            return
+        }
+        photoProblem = nil
+        mealPhoto = PickedMealPhoto(jpeg: jpeg)
     }
 }
 
 struct PushupsSkillView: View {
     @ObservedObject var model: SkillsModel
     @State private var count = 10
+    @State private var showCounter = false
 
     var body: some View {
         Form {
@@ -322,6 +380,16 @@ struct PushupsSkillView: View {
                     }
 
                     Section {
+                        Button {
+                            showCounter = true
+                        } label: {
+                            Label("Kamerayla say", systemImage: "camera.viewfinder")
+                        }
+                    } footer: {
+                        Text("Ön kamera kollarını izleyip tekrarları sayar; görüntü telefondan çıkmaz. Telefonu yere, seni yandan görecek biçimde dayat.")
+                    }
+
+                    Section {
                         Stepper("\(count) şınav", value: $count, in: 1...500)
                         Button {
                             Task { await model.logPushups(count) }
@@ -335,6 +403,9 @@ struct PushupsSkillView: View {
                 }
             }
             SkillNote(text: model.notes[.pushups])
+        }
+        .fullScreenCover(isPresented: $showCounter) {
+            PushupCameraView(model: model)
         }
     }
 }

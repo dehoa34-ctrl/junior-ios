@@ -98,6 +98,17 @@ final class ConversationStore: ObservableObject {
             sendVideo(video, text: trimmed)
             return
         }
+        // Telefonda video açıkken "30 saniye ileri", "duraklat", "sesi kıs": sabit sözlükten yerel
+        // eylem; sunucuya gitmez (Media/VideoControl.swift).
+        if !trimmed.isEmpty, image == nil, queued == nil, reusedRequestID == nil,
+           let said = VideoPlaybackCenter.shared.handleVoice(trimmed) {
+            messages.append(ChatMessage(role: .user, text: trimmed))
+            messages.append(ChatMessage(role: .assistant, text: said))
+            archive.save(messages)
+            onTurnEnded?(nil)
+            speech.speak(said, chunks: [])
+            return
+        }
         // Kuyruktaki komut gönderilirken gelen yeni komut reddedilmez, sıranın sonuna girer.
         if !trimmed.isEmpty, isSending, sendingQueued, queued == nil, image == nil {
             onTurnEnded?(queueBehind(text: trimmed, target: target))

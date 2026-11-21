@@ -16,10 +16,12 @@ struct PhoneTask: Equatable {
     /// Bildirim türü: sunucunun `category` ("task", "routine" …) ve `builtin` ("checkin", "watch") alanları.
     var category: String? = nil
     var builtin: String? = nil
+    /// Haber ver olayının türü ("task_done", "hardware_alert" …); yalnız category == "notify" için.
+    var notifyType: String? = nil
 
     /// Ayarlar'daki bildirim kategorisi; nil ise bilgisayardan açıkça gönderilmiş (her zaman görünür).
     var notificationCategory: NotificationCategory? {
-        NotificationCategory.from(server: category, builtin: builtin, kind: kind.rawValue)
+        NotificationCategory.from(server: category, builtin: builtin, kind: kind.rawValue, notifyType: notifyType)
     }
 
     /// Sunucu yaniti: {"tasks": [{"id", "kind", "text", "url", "at" (ms)}]}.
@@ -44,12 +46,18 @@ struct PhoneTask: Equatable {
             case .note, .clipboard: if text.isEmpty { return nil }
             }
             return PhoneTask(id: id, kind: kind, text: text, url: url, at: at,
-                             category: item["category"] as? String, builtin: item["builtin"] as? String)
+                             category: item["category"] as? String, builtin: item["builtin"] as? String,
+                             notifyType: item["notify_type"] as? String)
         }
     }
 
     /// Bildirimde gorunecek baslik ve metin.
     var notification: (title: String, body: String) {
+        // Haber ver (sunucu notify.py): iş bitti, onay bekliyor, donanım uyarısı …
+        if category == "notify", kind == .note {
+            return (notifyType == "hardware_alert" ? "Donanım uyarısı" : "Junior haber veriyor", text)
+        }
+        if builtin == "briefing", kind == .note { return ("Açılış brifingi", text) }
         switch kind {
         case .note: return ("Bilgisayardan not", text)
         case .link: return ("Bilgisayardan bağlantı", text.isEmpty ? (url?.absoluteString ?? "") : text)

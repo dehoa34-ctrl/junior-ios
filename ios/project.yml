@@ -8,7 +8,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "1.4.0"
-    CURRENT_PROJECT_VERSION: "20"
+    CURRENT_PROJECT_VERSION: "21"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
@@ -32,8 +32,9 @@ targets:
       # Dynamic Island / kilit ekranı (Live Activity) eklentisi uygulamaya gömülür.
       - target: JuniorWidgets
       # Paylaş menüsündeki "Junior" (bağlantı/metin → Özetle, Araştır, Hafızaya kaydet).
-      # Her derlemede derlenir; .ipa'ya varsayılan olarak konmaz (ios.yml "paylas_eklentisi"):
-      # ücretsiz hesapta AltStore/SideStore her eklentiyi 3 uygulama sınırına sayıyor.
+      # Her derlemede gömülür; ios.yml iki .ipa paketler: Junior.ipa (eklenti çıkarılmış, varsayılan:
+      # ücretsiz hesapta AltStore/SideStore her eklentiyi 3 uygulama sınırına sayıyor) ve
+      # Junior-Paylas.ipa (eklentili).
       - target: JuniorShare
     sources:
       - path: Junior/Sources
@@ -62,7 +63,7 @@ targets:
         # Izin metinleri kullaniciya aynen gosterilir; Turkce ve acik olmali.
         NSMicrophoneUsageDescription: "Junior'a konuşabilmen için ve 'Telefonda sürekli dinle' açıkken konuşmaları kaydedip kendi bilgisayarına yüklemek için mikrofon gerekiyor."
         NSSpeechRecognitionUsageDescription: Soylediklerini yaziya cevirmek icin konusma tanima gerekiyor.
-        NSCameraUsageDescription: "\"Bu ne\" gibi sorularda gonderdigin fotografi cekmek icin kamera gerekiyor."
+        NSCameraUsageDescription: "\"Bu ne\" gibi sorularda fotoğraf çekmek, yemeğin kalorisini fotoğraftan tahmin ettirmek ve şınavlarını ön kamerayla saymak için kamera gerekiyor. Şınav görüntüsü yalnız telefonda işlenir, hiçbir yere gönderilmez."
         NSPhotoLibraryUsageDescription: Var olan bir fotografi Junior'a sormak icin galeri erisimi gerekiyor.
         NSPhotoLibraryAddUsageDescription: Junior'in bilgisayarda kurguladigi videoyu Fotograflar'a kaydetmek icin gerekiyor.
         # Telefon eylemleri: "annemi ara", "yarın 9'a hatırlat", "takvime ekle", "Apple Müzik'te çal".

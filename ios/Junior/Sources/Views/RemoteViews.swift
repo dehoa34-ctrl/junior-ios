@@ -181,6 +181,10 @@ struct NotificationSettingsSection: View {
         case .watch: return JuniorTheme.blue
         case .system: return JuniorTheme.red
         case .remote: return JuniorTheme.orange
+        case .screen: return JuniorTheme.cyan
+        case .notify: return JuniorTheme.cyan
+        case .briefing: return JuniorTheme.orange
+        case .hardware: return JuniorTheme.red
         }
     }
 }

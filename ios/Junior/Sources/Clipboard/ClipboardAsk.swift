@@ -11,6 +11,8 @@ enum ClipboardAsk {
         let title: String
         /// Junior'a gönderilecek mesaj.
         let prompt: String
+        /// Düzelt: sohbete yazılmaz, sonuç ayrı sayfada gösterilir ve kopyalanır (ClipboardFix).
+        var fix = false
     }
 
     /// Mesaja konacak pano metninin en uzun hâli (sunucu sınırı 4000; ön söz için pay bırakılır).
@@ -47,6 +49,7 @@ enum ClipboardAsk {
         return [
             Option(title: "Açıkla", prompt: "Şunu kısaca açıkla:\n\n\(clip)"),
             translate,
+            Option(title: "Düzelt", prompt: ClipboardFix.prompt(for: clip), fix: true),
         ]
     }
 

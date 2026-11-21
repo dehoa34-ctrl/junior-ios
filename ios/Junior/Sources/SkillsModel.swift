@@ -207,9 +207,56 @@ final class SkillsModel: ObservableObject {
         notes[.calories] = saved
     }
 
-    func logPushups(_ count: Int) async {
-        guard await call(.pushups, ["action": "log", "count": count]) != nil else { return }
+    /// Fotoğraftan kalori tahmini (kayıt YAPMAZ): küçültülmüş JPEG sunucuya gider, model yemekleri
+    /// listeler. Ağ/okuma hatasında nil döner ve neden `notes[.calories]`'a yazılır.
+    func estimateCalories(photo jpeg: Data) async -> CaloriePhotoEstimate? {
+        working = .calories
+        defer { working = nil }
+        do {
+            let (url, token) = try endpoint("/v1/skills/daily/calories/photo")
+            let body: [String: Any] = ["image_base64": jpeg.base64EncodedString(), "image_mime_type": "image/jpeg"]
+            let data = try await client.json(method: "POST", url: url, token: token, body: body, timeout: Self.modelTimeout)
+            guard let estimate = CaloriePhotoEstimate.parse(data) else {
+                throw JuniorError.server("Junior'ın yanıtı okunamadı; bilgisayardaki Junior'ı güncelle.")
+            }
+            notes[.calories] = nil
+            return estimate
+        } catch {
+            notes[.calories] = Self.describe(error)
+            return nil
+        }
+    }
+
+    /// Onaylanan fotoğraf tahminlerini "tahmini" işaretiyle kaydeder; kaç satırın yazıldığını döndürür
+    /// (ilk hatada durur, yazılanlar tekrar yazılmasın diye).
+    func logPhotoFoods(_ foods: [PhotoFood]) async -> Int {
+        var saved = 0
+        var failure: String?
+        for food in foods {
+            guard let reply = await call(.calories, food.logBody) else {
+                failure = notes[.calories]
+                break
+            }
+            guard reply.worked else {
+                failure = reply.reply
+                break
+            }
+            saved += 1
+        }
+        if saved > 0 {
+            await load()
+            await loadCalories()
+        }
+        if let failure { notes[.calories] = failure }
+        return saved
+    }
+
+    /// Şınav kaydı; yalnız sunucu gerçekten yazdıysa true. Başarısızlık sebebi notes[.pushups]'a düşer.
+    @discardableResult
+    func logPushups(_ count: Int) async -> Bool {
+        guard let reply = await call(.pushups, ["action": "log", "count": count]), reply.worked else { return false }
         await load()
+        return true
     }
 
     // MARK: - Aralıklı tekrar

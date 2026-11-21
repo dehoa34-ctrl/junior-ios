@@ -206,8 +206,10 @@ final class NotificationGateTests: XCTestCase {
         XCTAssertEqual(NotificationCategory.from(server: "routine", builtin: nil, kind: "note"), .routine)
         XCTAssertEqual(NotificationCategory.from(server: "routine", builtin: "checkin", kind: "note"), .checkin)
         XCTAssertEqual(NotificationCategory.from(server: "routine", builtin: "watch", kind: "note"), .watch)
-        XCTAssertEqual(NotificationCategory.from(server: "routine", builtin: "briefing", kind: "note"), .routine)
+        XCTAssertEqual(NotificationCategory.from(server: "routine", builtin: "briefing", kind: "note"), .briefing)
         XCTAssertEqual(NotificationCategory.from(server: nil, builtin: nil, kind: "reminder"), .routine)
+        // Bilgisayardaki ekran olayı kuralı (mobile_api/screen_events.py): ayrı açılıp kapatılır.
+        XCTAssertEqual(NotificationCategory.from(server: "screen", builtin: nil, kind: "note"), .screen)
         // Bilgisayardan açıkça gönderilen not / bağlantı: kategorisiz, her zaman gösterilir.
         XCTAssertNil(NotificationCategory.from(server: nil, builtin: nil, kind: "note"))
         XCTAssertNil(NotificationCategory.from(server: nil, builtin: nil, kind: "link"))

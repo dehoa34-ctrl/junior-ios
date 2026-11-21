@@ -76,7 +76,11 @@ struct JuniorApp: App {
                 let providers = try await JuniorClient().confirmPairing(
                     url: url, token: token, fallback: config.url(path: "/v1/capabilities"))
                 let via = providers.isEmpty ? "" : "\nYanıtlar: " + providers.joined(separator: " → ")
-                pairingResult = PairingResult(ok: true, message: "Bilgisayardaki Junior’a ulaşıldı. Artık konuşabilirsin." + via)
+                // Anahtar QR'daki sırdan türetilip Keychain'e yazılır (ağdan gitmez); QR'da sır yoksa
+                // (eski bilgisayar uygulaması) komutlar yalnız TLS ile gider.
+                let sealed = await JuniorClient().preparePairingKey(token: token) != nil
+                let lock = sealed ? "\nKomutlar ve onaylar ayrıca QR'daki anahtarla şifreli (AES-256-GCM) gidiyor." : ""
+                pairingResult = PairingResult(ok: true, message: "Bilgisayardaki Junior’a ulaşıldı. Artık konuşabilirsin." + via + lock)
             } catch {
                 let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 pairingResult = PairingResult(ok: false, message: reason + "\n\nAdres ve belirteç kaydedildi; bilgisayar açılınca tekrar dener.")

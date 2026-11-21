@@ -17,6 +17,10 @@ enum PhoneAction: Equatable {
     case spotify(SpotifyCommand, query: String?, level: Int?)
     /// "Telefonda X'i kapat": iOS buna izin vermez; telefon yapamadığını nedeniyle söyler.
     case quitApp(String)
+    /// Sunucunun bulduğu video ("yeni Dune fragmanını oynat"): telefondaki oynatıcı açılır.
+    case playVideo(url: URL, title: String)
+    /// Açık oynatıcıya sarma/duraklatma/ses ("telefonda 30 saniye ileri").
+    case videoControl(VideoVoiceCommand)
 
     enum Channel: String, Equatable { case sms, whatsapp }
     enum MusicCommand: String, Equatable { case play, pause, next, previous }
@@ -90,6 +94,14 @@ enum PhoneAction: Equatable {
             return .spotify(command, query: text("query", max: 200), level: integer("level"))
         case "quit_app":
             return .quitApp(text("app", max: 60) ?? "Bu uygulama")
+        case "play_video":
+            // Yalnız bilinen video siteleri ya da doğrudan video dosyası (VideoLink ile aynı liste).
+            guard let raw = text("url", max: 2000), let url = URL(string: raw), VideoLink.isVideo(url) else { return nil }
+            return .playVideo(url: url, title: text("title", max: 200) ?? "")
+        case "video_control":
+            let seconds = (args["seconds"] as? Double) ?? (args["seconds"] as? Int).map(Double.init)
+            guard let command = VideoVoiceCommand.fromServer(action: text("action") ?? "", seconds: seconds) else { return nil }
+            return .videoControl(command)
         default:
             return nil
         }
@@ -99,8 +111,8 @@ enum PhoneAction: Equatable {
     /// Hatırlatıcı, takvim, zamanlayıcı ve müzik denetimi arka planda da çalışır.
     var needsForeground: Bool {
         switch self {
-        case .call, .message, .openApp, .torch, .spotify: return true
-        case .reminder, .event, .timer, .appleMusic, .quitApp: return false
+        case .call, .message, .openApp, .torch, .spotify, .playVideo: return true
+        case .reminder, .event, .timer, .appleMusic, .quitApp, .videoControl: return false
         }
     }
 

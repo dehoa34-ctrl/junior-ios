@@ -24,6 +24,8 @@ struct RootView: View {
     @StateObject private var server: ServerMonitor
     /// Bilgisayardan telefona gonderilen notlar, baglantilar, hatirlaticilar
     @StateObject private var phoneTasks: PhoneTaskService
+    /// Ana ekrandaki Durum kartı: açık iş sayıları ve bilgisayarın göstergeleri
+    @StateObject private var statusModel: PcStatusModel
     /// Telefonda sürekli dinleme: konuşma parçaları kesilip bilgisayara yüklenir.
     @StateObject private var live: LiveListenService
     /// Kedinin yüzü: son sonuç (mutlu / üzgün) ve son etkinlik.
@@ -33,6 +35,10 @@ struct RootView: View {
     /// "Panodakini sor" önerileri; boş değilken seçim penceresi açıktır.
     @State private var clipboardOptions: [ClipboardAsk.Option] = []
     @State private var clipboardText = ""
+    /// "Düzelt" sonucu sayfası.
+    @State private var fixRequest: ClipboardFixRequest?
+    /// Masaüstüyle eşzamanlanan vurgu rengi ve kedi yüzü.
+    @ObservedObject private var appearance = AppearanceModel.shared
     /// Gemini Live sesli oturumu (Ayarlar > Ses motoru); düşerse klasik yola döner.
     @StateObject private var gemini: GeminiLiveSession
     @AppStorage(VoiceEngine.storageKey) private var voiceEngine: VoiceEngine = .classic
@@ -78,12 +84,13 @@ struct RootView: View {
             healthURL: { [weak config] in config?.url(path: "/health") },
             probe: demo ? { (_: URL) async -> Bool in true } : nil))
         _phoneTasks = StateObject(wrappedValue: PhoneTaskService(config: config))
+        _statusModel = StateObject(wrappedValue: PcStatusModel(config: config))
         _live = StateObject(wrappedValue: LiveListenService(config: config, speech: speech))
     }
 
     var body: some View {
         ZStack {
-            AmbientBackground(tint: visualPhase == .waiting ? JuniorTheme.cyan.opacity(0.6) : visualPhase.color)
+            AmbientBackground(tint: visualPhase == .waiting ? appearance.tint.opacity(0.6) : visualPhase.color)
             VStack(spacing: 0) {
                 header
                 transcript
@@ -91,9 +98,17 @@ struct RootView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .tint(JuniorTheme.cyan)
+        .tint(appearance.tint)
         .sheet(isPresented: $showSettings) { SettingsView(config: config, store: store, glasses: glasses, live: live) }
         .sheet(item: $playing) { video in videoSheet(video) }
+        // Sunucunun bulduğu video ("Dune fragmanını oynat" → play_video telefon eylemi).
+        .onReceive(VideoPlaybackCenter.shared.$request) { video in
+            guard let video else { return }
+            playing = video
+            VideoPlaybackCenter.shared.request = nil
+        }
+        .sheet(item: $fixRequest) { request in ClipboardFixSheet(request: request, config: config) }
+        .task { await appearance.keepSynced(config: config) }
         .confirmationDialog("Panodakini sor", isPresented: clipboardShown, titleVisibility: .visible) {
             clipboardButtons
         } message: {
@@ -243,7 +258,9 @@ struct RootView: View {
 
     /// Kedinin yüz ifadesi: o anki adım ve son sonuç (bitti → mutlu, olmadı → üzgün).
     private func catExpression(at now: Date) -> CatExpression {
-        mood.expression(phase: isBusy ? visualPhase : .waiting, now: now)
+        // Masaüstünde kedi yüzü kapalıysa sade kedi: adımın kendi yüzü (eşzamanlama yapılmadıysa eski davranış).
+        if !appearance.expressiveCat { return CatExpression(phase: isBusy ? visualPhase : .waiting) }
+        return mood.expression(phase: isBusy ? visualPhase : .waiting, now: now)
     }
 
     // MARK: - Başlık
@@ -296,7 +313,10 @@ struct RootView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    if store.messages.isEmpty { emptyState }
+                    if store.messages.isEmpty {
+                        emptyState
+                        if store.canSend { StatusCardView(model: statusModel) }
+                    }
                     ForEach(store.messages) { message in
                         MessageRow(message: message, onPlay: { playing = PlayableVideo(url: $0) }).id(message.id)
                     }
@@ -749,6 +769,10 @@ struct RootView: View {
 
     private func askClipboard(_ option: ClipboardAsk.Option) {
         clipboardOptions = []
+        if option.fix {
+            fixRequest = ClipboardFixRequest(prompt: option.prompt)
+            return
+        }
         store.send(text: option.prompt)
     }
 

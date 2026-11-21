@@ -11,11 +11,6 @@ on:
     paths:
       - "ios/**"
   workflow_dispatch:
-    inputs:
-      paylas_eklentisi:
-        description: "Paylaş eklentisini (JuniorShare) .ipa'ya koy"
-        type: boolean
-        default: false
 
 # Ayni dal icin eski derlemeyi iptal et; private repoda macOS dakikalari 10x sayilir.
 concurrency:
@@ -172,33 +167,50 @@ jobs:
             ENABLE_BITCODE=NO \
             build
 
-      # Paylas eklentisi derlenir (kod bozulmasin) ama varsayilan olarak .ipa'ya konmaz:
-      # - Ucretsiz Apple hesabinda AltStore/SideStore her uygulama eklentisini 3 etkin uygulama
+      # Iki .ipa uretilir; ikisi de ayni derlemeden paketlenir (ikinci derleme yok):
+      # - Junior.ipa: Paylas eklentisi (JuniorShare) CIKARILMIS. Varsayilan kurulum.
+      #   Ucretsiz Apple hesabinda AltStore/SideStore her uygulama eklentisini 3 etkin uygulama
       #   sinirina sayar; AltStore + Junior + JuniorWidgets zaten 3. Dorduncu kurulumu bozar ya da
       #   eklentileri (Dynamic Island dahil) silmeyi sorar. Ayrica haftalik 10 App ID'den biri gider.
-      # - Imzasiz derlemede ortak Keychain grubu gomulmez; eklenti belirtece erisemeyebilir.
-      # Elle derlemede "paylas_eklentisi" secilirse konur.
-      - name: .ipa paketle
+      # - Junior-Paylas.ipa: Paylas eklentisi GOMULU. Ucretli hesap ya da bos uygulama yeri olan
+      #   SideStore icin. Imzasiz derlemede ortak Keychain grubu gomulmez; eklenti belirtece
+      #   erisemeyebilir (imzayi atan arac grubu vermezse "bu kurulumda belirtece erisemiyor" der).
+      - name: .ipa paketle (Junior.ipa ve Junior-Paylas.ipa)
         working-directory: ios
-        env:
-          PAYLAS_EKLENTISI: ${{ github.event.inputs.paylas_eklentisi }}
         run: |
           APP="build/Build/Products/Release-iphoneos/Junior.app"
           test -d "$APP" || { echo "Junior.app bulunamadi"; exit 1; }
+          test -d "$APP/PlugIns/JuniorShare.appex" || { echo "JuniorShare.appex derlemede yok"; exit 1; }
+
+          # 1) Eklentisiz (mevcut, varsayilan)
+          rm -rf Payload
           mkdir -p Payload
           cp -R "$APP" Payload/Junior.app
-          if [ "$PAYLAS_EKLENTISI" != "true" ]; then
-            rm -rf Payload/Junior.app/PlugIns/JuniorShare.appex
-            echo "Paylas eklentisi .ipa'ya konmadi (3 uygulama siniri)."
-          fi
+          rm -rf Payload/Junior.app/PlugIns/JuniorShare.appex
           ls Payload/Junior.app/PlugIns || true
           zip -qry Junior.ipa Payload
-          ls -lh Junior.ipa
+
+          # 2) Paylas eklentili
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/Junior.app
+          ls Payload/Junior.app/PlugIns || true
+          zip -qry Junior-Paylas.ipa Payload
+
+          ls -lh Junior.ipa Junior-Paylas.ipa
 
       - name: Ciktilari yukle
         uses: actions/upload-artifact@v4
         with:
           name: Junior-ipa
           path: ios/Junior.ipa
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Paylas eklentili ciktiyi yukle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Junior-ipa-paylas
+          path: ios/Junior-Paylas.ipa
           retention-days: 30
           if-no-files-found: error

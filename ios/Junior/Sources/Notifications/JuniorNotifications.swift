@@ -5,7 +5,7 @@ import UserNotifications
 /// Junior'ın bildirim türleri. Ayarlar'da her biri ayrı açılıp kapatılır; kapalı türden
 /// bildirim üretilmez.
 enum NotificationCategory: String, CaseIterable, Identifiable {
-    case task, routine, checkin, watch, system, remote
+    case task, routine, checkin, watch, system, remote, screen, notify, briefing, hardware
 
     var id: String { rawValue }
 
@@ -17,6 +17,10 @@ enum NotificationCategory: String, CaseIterable, Identifiable {
         case .watch: return "Yeni başlık izleme"
         case .system: return "Sistem uyarıları"
         case .remote: return "Uzak komut sonucu"
+        case .screen: return "Ekran olayı"
+        case .notify: return "Haber"
+        case .briefing: return "Brifing"
+        case .hardware: return "Donanım uyarısı"
         }
     }
 
@@ -28,6 +32,10 @@ enum NotificationCategory: String, CaseIterable, Identifiable {
         case .watch: return "İzlenen konularda yeni başlık çıkınca"
         case .system: return "Kayıt durdu gibi telefonun kendi uyarıları"
         case .remote: return "Bilgisayara ilettiğin komutun sonucu ve onay istekleri"
+        case .screen: return "Bilgisayarda \"ekranda X görünürse haber ver\" kuralı eşleşince"
+        case .notify: return "Junior arkada çalışırken iş bitince ya da önemli bir şey olunca (Haber ver)"
+        case .briefing: return "Açılış brifingi: bilgisayar açılınca günün özeti"
+        case .hardware: return "Bilgisayarda işlemci, bellek, disk, ekran kartı ya da sıcaklık eşiği aşılınca"
         }
     }
 
@@ -39,6 +47,10 @@ enum NotificationCategory: String, CaseIterable, Identifiable {
         case .watch: return "newspaper.fill"
         case .system: return "exclamationmark.triangle.fill"
         case .remote: return "desktopcomputer"
+        case .screen: return "eye.fill"
+        case .notify: return "bell.badge.fill"
+        case .briefing: return "sun.max.fill"
+        case .hardware: return "thermometer.high"
         }
     }
 
@@ -47,17 +59,23 @@ enum NotificationCategory: String, CaseIterable, Identifiable {
 
     /// Bilgisayardan gelen telefon işinin türü (`/v1/phone/tasks`: `category`, `builtin`, `kind`).
     /// Kategorisiz not/bağlantı/pano: bilgisayardan açıkça gönderilen şey, her zaman gösterilir (nil).
-    static func from(server category: String?, builtin: String?, kind: String) -> NotificationCategory? {
+    /// `notifyType`: Haber ver olayının türü (`notify_type`); "hardware_alert" ayrı bir kategoridir.
+    static func from(server category: String?, builtin: String?, kind: String,
+                     notifyType: String? = nil) -> NotificationCategory? {
         switch builtin {
         case "checkin": return .checkin
         case "watch": return .watch
+        case "briefing": return .briefing
         default: break
         }
+        if category == "notify", notifyType == "hardware_alert" { return .hardware }
         switch category {
         case "task": return .task
         case "routine": return .routine
         case "system": return .system
         case "remote": return .remote
+        case "screen": return .screen
+        case "notify": return .notify
         default: return kind == "reminder" ? .routine : nil
         }
     }

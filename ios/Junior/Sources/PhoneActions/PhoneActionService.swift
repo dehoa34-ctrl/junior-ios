@@ -104,10 +104,10 @@ final class PhoneActionService {
         case .appleMusic(_, let query):
             if query != nil, MPMediaLibrary.authorizationStatus() == .notDetermined { return "Müzik kitaplığı" }
             return nil
-        case .openApp, .torch, .spotify:
+        case .openApp, .torch, .spotify, .playVideo:
             if action.needsForeground, await notificationsUnasked() { return "Bildirim" }
             return nil
-        case .quitApp:
+        case .quitApp, .videoControl:
             return nil
         }
     }
@@ -162,6 +162,15 @@ final class PhoneActionService {
         case .appleMusic(let command, let query): return await appleMusic(command, query: query)
         case .spotify(let command, let query, _): return await spotify(command, query: query)
         case .quitApp: return .failed(action.notAllowedReason ?? "iOS buna izin vermiyor.")
+        case .playVideo(let url, _):
+            // Oynatıcı sayfası açılır; akış adresi /v1/media/resolve'dan istenir (yoksa gömülü oynatıcı).
+            VideoPlaybackCenter.shared.present(url: url)
+            return .done
+        case .videoControl(let command):
+            guard let said = VideoPlaybackCenter.shared.apply(command) else {
+                return .failed("Telefonda açık video yok; önce bir video aç.")
+            }
+            return .doneSaying(said)
         }
     }
 
@@ -202,6 +211,7 @@ final class PhoneActionService {
         case .openApp(let name): body = "\(name) açılsın. Dokun."
         case .torch(let on): body = on ? "El feneri açılsın. Dokun." : "El feneri kapatılsın. Dokun."
         case .spotify: body = "Spotify açılıp müzik başlatılsın. Dokun."
+        case .playVideo(_, let title): body = "\(title.isEmpty ? "Video" : title) açılsın. Dokun."
         default: body = "Dokun."
         }
         let posted = await post(title: "Junior", body: body, userInfo: info)

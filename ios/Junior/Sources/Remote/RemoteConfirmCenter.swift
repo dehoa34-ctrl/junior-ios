@@ -160,7 +160,8 @@ final class RemoteConfirmCenter: ObservableObject {
         var status: Int?
         var message: String?
         if let response = try? await client.jsonResponse(method: "POST", url: url, token: token,
-                                                         body: ["decision": approve ? "approve" : "deny"], timeout: 15) {
+                                                         body: ["decision": approve ? "approve" : "deny"], timeout: 15,
+                                                         sealed: true) {
             status = response.status
             message = RemoteConfirmText.serverMessage(response.data)
         }

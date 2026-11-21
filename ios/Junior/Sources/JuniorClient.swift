@@ -170,9 +170,11 @@ actor JuniorClient {
         // parcalarin sesini hemen uretmeye baslasin: ses birkac saniye erken gelir.
         request.setValue("chunks", forHTTPHeaderField: "X-Junior-Speech")
         if followsRemote { request.setValue("1", forHTTPHeaderField: "X-Junior-Remote") }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await performCommand(request, health: healthURL)
+        // Eşleştirme anahtarı varsa gövde AES-256-GCM ile şifreli gider (PairingCrypto.swift).
+        let (data, response) = try await sealedExchange(request, url: url, token: token, body: body) { request in
+            try await self.performCommand(request, health: healthURL)
+        }
         try check(response: response, data: data)
         let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let reply = parsed["reply"] as? String ?? ""
@@ -270,8 +272,9 @@ actor JuniorClient {
 
     /// Durum kodu anlam taşıyan küçük JSON uçları (uzak komut ve onay: 404/409/410).
     /// Yalnız ağ hatasında atar; HTTP yanıtı olduğu gibi döner. Zaman aşımı en çok 30 sn.
+    /// `sealed`: eşleştirme anahtarı varsa gövde şifreli gider (uzak komut onayı).
     func jsonResponse(method: String, url: URL, token: String, body: [String: Any]? = nil,
-                      timeout: TimeInterval = 30) async throws -> (status: Int, data: Data) {
+                      timeout: TimeInterval = 30, sealed: Bool = false) async throws -> (status: Int, data: Data) {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.timeoutInterval = min(30, timeout)
@@ -280,7 +283,15 @@ actor JuniorClient {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
-        let (data, response) = try await perform(request)
+        let exchanged: (Data, URLResponse)
+        if sealed, method == "POST", let body {
+            exchanged = try await sealedExchange(request, url: url, token: token, body: body) { request in
+                try await self.perform(request)
+            }
+        } else {
+            exchanged = try await perform(request)
+        }
+        let (data, response) = exchanged
         guard let http = response as? HTTPURLResponse else { throw JuniorError.network }
         // Tünel ayakta ama bilgisayardaki sunucu kapalı: ulaşılamıyor sayılır.
         if Self.originUnreachable(http.statusCode) { throw JuniorError.network }
@@ -326,6 +337,56 @@ actor JuniorClient {
             }
         }
         return Array(pairs.suffix(JuniorLimits.maxHistoryMessages))
+    }
+
+    // MARK: - Eşleştirme şifrelemesi (PairingCrypto.swift, sunucuda mobile_api/pairing_crypto.py)
+
+    /// Eşleştirme anahtarı: Keychain'de varsa o; yoksa QR'dan gelen bekleyen sırdan türetilip saklanır
+    /// (ağa çıkmaz, PBKDF2 bu aktörde çalışır). QR'da sır yoksa (eski bilgisayar uygulaması) nil:
+    /// istekler eskisi gibi düz gider.
+    @discardableResult
+    func preparePairingKey(token: String) -> PairingKey? {
+        if let stored = PairingKeyStore.load(token: token) { return stored }
+        guard let seed = PairingKeyStore.loadPending(token: token),
+              let key = PairingCrypto.deriveKey(secret: seed.secret, salt: seed.salt, iterations: seed.iterations)
+        else { return nil }
+        let made = PairingKey(kid: seed.kid, key: key, tokenTag: PairingKeyStore.tag(token))
+        PairingKeyStore.save(made)
+        // Sır yalnız türetme için tutulur; anahtar Keychain'e yazıldıysa silinir (yazılamadıysa sonra yeniden denenir).
+        if PairingKeyStore.load(token: token) != nil { PairingKeyStore.clearPending() }
+        return made
+    }
+
+    /// Gövdeyi anahtar varsa şifreli, yoksa düz gönderir; şifreli yanıtı açar. Anahtar varken istek
+    /// hiçbir durumda düz gönderilmez ve şifre katmanının reddinden (crypto_key_unknown, crypto_failed)
+    /// sonra yeniden gönderilmez, anahtar da silinmez: araya giren biri sahte bir ret yanıtıyla telefonu
+    /// şifresiz göndermeye düşüremez. Kullanıcı sunucunun "QR kodla yeniden eşleştir" iletisini görür.
+    private func sealedExchange(_ base: URLRequest, url: URL, token: String, body: [String: Any],
+                                run: (URLRequest) async throws -> (Data, URLResponse)) async throws -> (Data, URLResponse) {
+        let key = preparePairingKey(token: token)
+        var request = base
+        request.httpBody = try PairingCrypto.requestBody(body, key: key, method: base.httpMethod ?? "POST",
+                                                         path: PairingCrypto.aadPath(url))
+        let (data, response) = try await run(request)
+        return (try unsealed(data, response: response, url: url, method: base.httpMethod ?? "POST", key: key), response)
+    }
+
+    /// Şifreli gönderdiysek başarılı yanıt da şifreli olmalı; şifre katmanının kendi hatası düz gelir.
+    private func unsealed(_ data: Data, response: URLResponse, url: URL, method: String, key: PairingKey?) throws -> Data {
+        guard let key else { return data }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if PairingCrypto.isEnvelope(data) {
+            do {
+                return try PairingCrypto.openResponse(data, key: key.key, kid: key.kid, method: method,
+                                                      path: PairingCrypto.aadPath(url))
+            } catch {
+                throw JuniorError.server("Bilgisayardan gelen şifreli yanıt açılamadı; telefonu QR kodla yeniden eşleştir.")
+            }
+        }
+        if (200..<300).contains(status) {
+            throw JuniorError.server("Bilgisayardan şifresiz yanıt geldi; güvenlik için kullanılmadı.")
+        }
+        return data
     }
 
     private func perform(_ request: URLRequest) async throws -> (Data, URLResponse) {

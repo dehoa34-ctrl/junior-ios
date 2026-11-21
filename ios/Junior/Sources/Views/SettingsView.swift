@@ -120,6 +120,7 @@ struct SettingsView: View {
                 // Group: Form'un doğrudan çocuk sayısı (10) artmasın.
                 Group {
                     InputDeviceSection()
+                    AppearanceSettingsSection(config: config)
                     LiveSettingsSection(config: config, live: live)
                 }
 
@@ -136,6 +137,11 @@ struct SettingsView: View {
                         TasksView(config: config)
                     } label: {
                         Label { Text("Görevler ve araştırmalar") } icon: { SettingIcon(systemName: "sparkle.magnifyingglass", color: JuniorTheme.green) }
+                    }
+                    NavigationLink {
+                        RemoteQueueView(config: config)
+                    } label: {
+                        Label { Text("Bilgisayar kuyruğu") } icon: { SettingIcon(systemName: "clock.arrow.circlepath", color: JuniorTheme.cyan) }
                     }
                     NavigationLink {
                         MemoryView(config: config)

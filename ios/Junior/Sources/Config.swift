@@ -24,6 +24,8 @@ final class Config: ObservableObject {
         let id = UUID()
         let baseURL: String
         let token: String
+        /// Komut şifrelemesinin QR'daki parçası (k, kid, s, i); eski bilgisayar uygulamasında yok.
+        var seed: PairingSeed? = nil
         var host: String { URLComponents(string: baseURL)?.host ?? baseURL }
     }
 
@@ -146,6 +148,7 @@ final class Config: ObservableObject {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             Keychain.delete(account: Keys.keychainAccount)
+            PairingKeyStore.clear()
             cachedToken = nil
             hasToken = false
         } else {
@@ -171,12 +174,18 @@ final class Config: ObservableObject {
               token.count >= 32, token.count <= 256,
               token.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) && $0.isASCII || $0 == "-" || $0 == "_" })
         else { return nil }
-        return PairingRequest(baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base, token: token)
+        // Şifreleme parçası varsa bozuk olamaz: yarım QR eşleştirmeyi geçersiz kılar.
+        let seed: PairingSeed?
+        do { seed = try PairingSeed.parse(items) } catch { return nil }
+        return PairingRequest(baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base, token: token, seed: seed)
     }
 
     func applyPairing(_ request: PairingRequest) {
+        // Eski eşleşmenin şifreleme anahtarı yeni belirteçle geçmez; yenisi QR'daki sırdan türetilir.
+        PairingKeyStore.clear()
         baseURL = request.baseURL
         setToken(request.token)
+        if let seed = request.seed { PairingKeyStore.savePending(seed, token: request.token) }
         pendingPairing = nil
     }
 

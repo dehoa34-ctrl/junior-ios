@@ -386,9 +386,9 @@ final class ClipboardAskTests: XCTestCase {
         XCTAssertEqual(ClipboardAsk.options(for: "https://youtu.be/x").map(\.title), ["Özetle", "Ne anlatıyor?"])
     }
 
-    func testTextOffersExplainAndTranslate() {
-        XCTAssertEqual(ClipboardAsk.options(for: "The quick brown fox").map(\.title), ["Açıkla", "Türkçeye çevir"])
-        XCTAssertEqual(ClipboardAsk.options(for: "Yarın görüşürüz").map(\.title), ["Açıkla", "İngilizceye çevir"])
+    func testTextOffersExplainTranslateAndFix() {
+        XCTAssertEqual(ClipboardAsk.options(for: "The quick brown fox").map(\.title), ["Açıkla", "Türkçeye çevir", "Düzelt"])
+        XCTAssertEqual(ClipboardAsk.options(for: "Yarın görüşürüz").map(\.title), ["Açıkla", "İngilizceye çevir", "Düzelt"])
         // Boşluk içeren "adres" metindir.
         XCTAssertNil(ClipboardAsk.link(in: "https://example.com bak"))
         XCTAssertEqual(ClipboardAsk.options(for: "   "), [])
