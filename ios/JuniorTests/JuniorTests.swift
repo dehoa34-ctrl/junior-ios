@@ -107,6 +107,18 @@ final class HistoryPairingTests: XCTestCase {
         XCTAssertEqual(JuniorClient.completedPairs(from: history).last?["content"], "m39")
     }
 
+    func testStrayMessageDoesNotShiftLaterPairs() {
+        // Eşi olmayan tek mesaj (yanıtsız Gemini sözü, Spotify duyurusu) sonraki turları düşürmemeli.
+        let history = [message(.user, "u1"), message(.assistant, "a1"),
+                       message(.user, "yanitsiz"),
+                       message(.user, "u2"), message(.assistant, "a2"),
+                       message(.assistant, "duyuru"),
+                       message(.user, "u3"), message(.assistant, "a3")]
+        let pairs = JuniorClient.completedPairs(from: history)
+        XCTAssertEqual(pairs.map { $0["content"] }, ["u1", "a1", "u2", "a2", "u3", "a3"])
+        XCTAssertEqual(pairs.map { $0["role"] }, ["user", "assistant", "user", "assistant", "user", "assistant"])
+    }
+
     func testEmptyHistoryProducesNothing() {
         XCTAssertTrue(JuniorClient.completedPairs(from: []).isEmpty)
         XCTAssertTrue(JuniorClient.completedPairs(from: [message(.user, "tek")]).isEmpty)

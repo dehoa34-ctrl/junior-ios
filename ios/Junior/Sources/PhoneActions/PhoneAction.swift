@@ -15,6 +15,8 @@ enum PhoneAction: Equatable {
     case torch(on: Bool)
     case appleMusic(MusicCommand, query: String?)
     case spotify(SpotifyCommand, query: String?, level: Int?)
+    /// "Telefonda X'i kapat": iOS buna izin vermez; telefon yapamadığını nedeniyle söyler.
+    case quitApp(String)
 
     enum Channel: String, Equatable { case sms, whatsapp }
     enum MusicCommand: String, Equatable { case play, pause, next, previous }
@@ -86,6 +88,8 @@ enum PhoneAction: Equatable {
         case "spotify":
             guard let command = SpotifyCommand(rawValue: (text("action") ?? "play").lowercased()) else { return nil }
             return .spotify(command, query: text("query", max: 200), level: integer("level"))
+        case "quit_app":
+            return .quitApp(text("app", max: 60) ?? "Bu uygulama")
         default:
             return nil
         }
@@ -96,8 +100,15 @@ enum PhoneAction: Equatable {
     var needsForeground: Bool {
         switch self {
         case .call, .message, .openApp, .torch, .spotify: return true
-        case .reminder, .event, .timer, .appleMusic: return false
+        case .reminder, .event, .timer, .appleMusic, .quitApp: return false
         }
+    }
+
+    /// iOS'un üçüncü taraf uygulamaya hiç izin vermediği eylemin nedeni; yapılabilirse nil.
+    var notAllowedReason: String? {
+        guard case .quitApp(let app) = self else { return nil }
+        return "iOS buna izin vermiyor; Junior telefondaki başka bir uygulamayı kapatamaz. "
+            + "Kapatmak için ekranın altından yukarı kaydır ve \(app) kartını yukarı at."
     }
 }
 

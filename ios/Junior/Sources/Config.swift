@@ -42,7 +42,10 @@ final class Config: ObservableObject {
     }
 
     @Published var baseURL: String {
-        didSet { UserDefaults.standard.set(baseURL, forKey: Keys.baseURL) }
+        didSet {
+            UserDefaults.standard.set(baseURL, forKey: Keys.baseURL)
+            syncShareExtension()
+        }
     }
 
     @Published private(set) var hasToken: Bool
@@ -121,6 +124,15 @@ final class Config: ObservableObject {
         #if DEBUG
         DemoMode.prepare(self)
         #endif
+        syncShareExtension()
+    }
+
+    /// Paylaş eklentisi adres ve belirtecin ortak Keychain kopyasını okur (SharedCredentials).
+    /// Kopya her açılışta, adres ve belirteç değişince yenilenir; belirteç silinince silinir.
+    private func syncShareExtension() {
+        SharedCredentials.store(baseURL: baseURL, token: cachedToken,
+                                teamPrefix: SharedCredentials.teamPrefix(service: Keychain.service,
+                                                                         account: Keys.keychainAccount))
     }
 
     var token: String? {
@@ -142,6 +154,7 @@ final class Config: ObservableObject {
             cachedToken = trimmed
             hasToken = true
         }
+        syncShareExtension()
     }
 
     /// junior://pair?u=<https adresi>&t=<belirtec> baglantisini cozer.
@@ -183,7 +196,7 @@ final class Config: ObservableObject {
 }
 
 enum Keychain {
-    private static let service = "app.junior.token"
+    static let service = "app.junior.token"
 
     static func read(account: String) -> String? {
         let query: [String: Any] = [

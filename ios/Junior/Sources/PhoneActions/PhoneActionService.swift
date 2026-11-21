@@ -107,6 +107,8 @@ final class PhoneActionService {
         case .openApp, .torch, .spotify:
             if action.needsForeground, await notificationsUnasked() { return "Bildirim" }
             return nil
+        case .quitApp:
+            return nil
         }
     }
 
@@ -159,6 +161,7 @@ final class PhoneActionService {
         case .torch(let on): return setTorch(on)
         case .appleMusic(let command, let query): return await appleMusic(command, query: query)
         case .spotify(let command, let query, _): return await spotify(command, query: query)
+        case .quitApp: return .failed(action.notAllowedReason ?? "iOS buna izin vermiyor.")
         }
     }
 

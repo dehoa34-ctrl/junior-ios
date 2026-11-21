@@ -44,16 +44,20 @@ struct JuniorCat: View {
     var phase: JuniorActivityPhase
     var size: CGFloat
     var glow = false
+    /// Yüz ifadesi; verilmezse adımın eski yüzü (açık ya da kapalı göz).
+    var expression: CatExpression? = nil
     @State private var blink = false
 
+    private var sleeping: Bool { expression?.eyesClosed ?? phase.eyesClosed }
+
     var body: some View {
-        DotCatView(color: phase.color, eyesClosed: phase.eyesClosed || blink, columns: 15)
+        DotCatView(color: phase.color, eyesClosed: sleeping || blink, columns: 15, expression: expression)
             .frame(width: size, height: size)
             .shadow(color: glow ? phase.color.opacity(0.55) : .clear, radius: size * 0.18)
             .animation(.easeInOut(duration: 0.4), value: phase)
-            .task(id: phase) {
+            .task(id: "\(phase.rawValue)-\(expression?.rawValue ?? "")") {
                 // Uyanıkken 3-6 saniyede bir kısa kırpış.
-                guard !phase.eyesClosed else { return }
+                guard !sleeping else { return }
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: UInt64.random(in: 3_000_000_000...6_000_000_000))
                     blink = true
@@ -68,9 +72,10 @@ struct JuniorCat: View {
 struct CatBadge: View {
     var phase: JuniorActivityPhase
     var size: CGFloat = 40
+    var expression: CatExpression? = nil
 
     var body: some View {
-        JuniorCat(phase: phase, size: size * 0.84)
+        JuniorCat(phase: phase, size: size * 0.84, expression: expression)
             .frame(width: size, height: size)
             .background(Circle().fill(phase.color.opacity(0.14)))
             .overlay(Circle().stroke(phase.color.opacity(0.35), lineWidth: 1))

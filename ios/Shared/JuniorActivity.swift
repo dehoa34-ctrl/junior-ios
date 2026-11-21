@@ -14,9 +14,48 @@ struct JuniorActivityAttributes: ActivityAttributes {
         /// Son turda gözlük kamerası kullanıldı mı
         var glasses: Bool
         var updatedAt: Date
+        /// Bilgisayardaki Junior'ın beklettiği onay isteği; doluyken adada Onayla/Reddet görünür.
+        /// İsteğe bağlı: eski sürümün yazdığı durum da çözülür.
+        var confirmID: String? = nil
+        /// Kedinin yüz ifadesi (`CatExpression` ham değeri); boşsa adımdan türetilir.
+        var expression: String? = nil
     }
 
     var startedAt: Date
+}
+
+/// Adadaki onay düğmelerinin kuralı. Saf mantık: uygulama durumu yazarken, widget çizerken kullanır.
+///
+/// Onay gösterilirken etkinliğin "eski" anı onayın sona erme anıdır. Uygulama askıdayken
+/// süre dolarsa kimse güncelleme yapamaz; sistem etkinliği eski sayar ve widget düğmeleri
+/// gizler, kullanıcı ölü bir isteğe karar vermez.
+enum JuniorConfirmDisplay {
+    /// Onay yokken: 15 dk güncelleme gelmezse etkinlik eski görünür.
+    static let idleStaleAfter: TimeInterval = 15 * 60
+
+    static func staleDate(now: Date, confirmExpiresAt: Date?) -> Date {
+        if let confirmExpiresAt { return max(now, confirmExpiresAt) }
+        return now.addingTimeInterval(idleStaleAfter)
+    }
+
+    /// Düğmeleri çizilecek onay; eskimiş etkinlikte nil.
+    static func buttonsID(confirmID: String?, isStale: Bool) -> String? {
+        guard let confirmID, !confirmID.isEmpty, !isStale else { return nil }
+        return confirmID
+    }
+
+    /// Gösterilecek adım: süresi geçmiş onay "Onay bekliyor" demez.
+    static func phase(raw: String, isStale: Bool) -> JuniorActivityPhase {
+        let phase = JuniorActivityPhase(raw: raw)
+        return phase == .confirm && isStale ? .done : phase
+    }
+
+    /// Adadaki kedinin ifadesi: uygulamanın yazdığı ifade, yoksa (eski sürüm) adımdan.
+    /// Eskimiş etkinlikte yazılan ifade de bayattır; gösterilen adımdan türetilir.
+    static func expression(raw: String?, phase: JuniorActivityPhase, isStale: Bool) -> CatExpression {
+        if !isStale, let written = CatExpression(raw: raw) { return written }
+        return CatExpression(phase: phase)
+    }
 }
 
 /// Live Activity'de gösterilen adımlar. Ham değerler ContentState'e yazılır.
@@ -28,6 +67,8 @@ enum JuniorActivityPhase: String, CaseIterable {
     case speaking
     case done
     case error
+    /// Bilgisayardaki Junior telefondan onay bekliyor.
+    case confirm
 
     init(raw: String) {
         self = JuniorActivityPhase(rawValue: raw) ?? .waiting
@@ -43,6 +84,7 @@ enum JuniorActivityPhase: String, CaseIterable {
         case .speaking: return "Konuşuyorum"
         case .done: return "Junior"
         case .error: return "Bir sorun oldu"
+        case .confirm: return "Onay bekliyor"
         }
     }
 
@@ -56,6 +98,7 @@ enum JuniorActivityPhase: String, CaseIterable {
         case .speaking: return "Konuşuyor"
         case .done: return "Bitti"
         case .error: return "Hata"
+        case .confirm: return "Onay"
         }
     }
 
@@ -69,6 +112,7 @@ enum JuniorActivityPhase: String, CaseIterable {
         case .speaking: return "speaker.wave.2.fill"
         case .done: return "checkmark"
         case .error: return "exclamationmark.triangle.fill"
+        case .confirm: return "checkmark.shield.fill"
         }
     }
 
@@ -82,6 +126,7 @@ enum JuniorActivityPhase: String, CaseIterable {
         case .speaking: return (0.62, 0.91, 1.0)
         case .done: return (0.20, 0.83, 0.60)
         case .error: return (0.96, 0.31, 0.37)
+        case .confirm: return (1.0, 0.62, 0.26)
         }
     }
 

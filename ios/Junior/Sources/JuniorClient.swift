@@ -34,6 +34,8 @@ enum CommandStatus: Equatable {
     case outcomeUnknown
     /// Sunucu işi telefona bıraktı (hatırlatıcı, arama, zamanlayıcı …): `phone_action`.
     case phoneAction
+    /// Komut bilgisayardaki Junior'a iletildi; sonuç `GET /v1/remote/{id}` ile beklenir.
+    case remoteStarted
     case other(String)
 
     init(raw: String?) {
@@ -46,6 +48,7 @@ enum CommandStatus: Equatable {
         case "not_completed": self = .notCompleted
         case "outcome_unknown": self = .outcomeUnknown
         case "phone_action": self = .phoneAction
+        case "remote_started": self = .remoteStarted
         case let value?: self = .other(value)
         }
     }
@@ -60,6 +63,10 @@ struct CommandResponse {
     /// `status == .phoneAction` iken telefonun yapacağı iş (ve bildirime konacak ham hali).
     var phoneAction: PhoneAction?
     var phoneActionPayload: [String: Any]?
+    /// `status == .remoteStarted` iken bilgisayara iletilen işin kimliği.
+    var remoteJobID: String?
+    /// Sunucunun yaptığı işler ("pomodoro_stop" …): telefon kendi durumunu buna göre tazeler.
+    var actionsExecuted: [String] = []
 }
 
 enum JuniorError: LocalizedError {
@@ -71,6 +78,9 @@ enum JuniorError: LocalizedError {
     case rateLimited
     case server(String)
     case network
+    /// Komut gönderildi ama yanıt gelmedi (zaman aşımı, bağlantı yarıda koptu): sunucuya
+    /// ulaşmış olabilir. Çevrimdışı kuyruğa girmez, kendiliğinden yeniden gönderilmez.
+    case noReply
 
     var errorDescription: String? {
         switch self {
@@ -82,8 +92,30 @@ enum JuniorError: LocalizedError {
         case .rateLimited: return "Dakikalik istek sinirina ulasildi."
         case .server(let message): return message
         case .network: return "Sunucuya ulasilamadi. Bilgisayar ve tunel acik mi?"
+        case .noReply: return "Yanıt gecikti; komut bilgisayara gitmiş olabilir. Yeniden denemeden önce bilgisayardan kontrol et."
         }
     }
+
+    /// Komut isteğinin ağ hatası: yalnız bağlantı **hiç kurulamadıysa** `.network` (istek
+    /// sunucuya gitmedi, kuyruğa alınabilir). Zaman aşımı ya da yarıda kopma `.noReply`:
+    /// istek ulaşmış olabilir, otomatik yeniden gönderme aynı sohbet turunu iki kez çalıştırırdı.
+    static func commandFailure(_ error: Error) -> JuniorError {
+        if let junior = error as? JuniorError { return junior }
+        guard let urlError = error as? URLError else { return .noReply }
+        switch urlError.code {
+        case .notConnectedToInternet, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+             .internationalRoamingOff, .dataNotAllowed, .callIsActive:
+            return .network
+        default:
+            return .noReply
+        }
+    }
+}
+
+/// Komut isteğinin yanıtı; görev grubundan taşınabilsin diye tek değer.
+private struct CommandReply: @unchecked Sendable {
+    let data: Data
+    let response: URLResponse
 }
 
 actor JuniorClient {
@@ -106,12 +138,21 @@ actor JuniorClient {
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
     }
 
+    /// Komut bu kadar saniyede bitmezse sunucunun ayakta olup olmadığına bakılır.
+    static let reachabilityDelay: TimeInterval = 5
+    static let reachabilityTimeout: TimeInterval = 10
+
+    /// - requestID: çevrimdışı kuyruktan gönderilen komut ilk denemenin kimliğini taşır.
+    /// - followsRemote: uzak komutun sonucunu `GET /v1/remote/{id}` ile bekleyecek miyiz
+    ///   (sunucu "sonucu birazdan söylerim" sözünü yalnız o zaman verir).
+    /// - healthURL: verilirse bağlantı ölüyken 100 sn beklenmez; en geç ~15 sn'de `.network`.
     func send(url: URL, token: String, message: String, history: [ChatMessage],
-              image: Data?, target: String?) async throws -> CommandResponse {
+              image: Data?, target: String?, requestID: String = UUID().uuidString,
+              followsRemote: Bool = false, healthURL: URL? = nil) async throws -> CommandResponse {
         var body: [String: Any] = [
             "message": String(message.prefix(JuniorLimits.maxMessageChars)),
             // Ag tekrari sarkiyi iki kez atlamasin diye her istek benzersiz kimlik tasir.
-            "request_id": UUID().uuidString,
+            "request_id": requestID,
         ]
         let pairs = Self.completedPairs(from: history)
         if !pairs.isEmpty { body["history"] = pairs }
@@ -128,9 +169,10 @@ actor JuniorClient {
         // Sunucu yanitla birlikte seslendirme parcalarini da gondersin ve ilk
         // parcalarin sesini hemen uretmeye baslasin: ses birkac saniye erken gelir.
         request.setValue("chunks", forHTTPHeaderField: "X-Junior-Speech")
+        if followsRemote { request.setValue("1", forHTTPHeaderField: "X-Junior-Remote") }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await perform(request)
+        let (data, response) = try await performCommand(request, health: healthURL)
         try check(response: response, data: data)
         let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let reply = parsed["reply"] as? String ?? ""
@@ -141,18 +183,20 @@ actor JuniorClient {
                                        status: status,
                                        errorCode: error?["code"] as? String,
                                        speech: reply.isEmpty ? [] : speech)
+        result.actionsExecuted = (parsed["actions_executed"] as? [Any])?.compactMap { $0 as? String } ?? []
         if status == .phoneAction, let payload = parsed["phone_action"] as? [String: Any] {
             result.phoneActionPayload = payload
             result.phoneAction = PhoneAction.parse(payload)
         }
+        if status == .remoteStarted { result.remoteJobID = parsed["job_id"] as? String }
         return result
     }
 
     /// Sunucu ayakta mi. Token istemez ve hizli doner; konusmadan **once**
     /// bilgisayarin acik olup olmadigini gostermek icin.
-    func isReachable(url: URL) async -> Bool {
+    func isReachable(url: URL, timeout: TimeInterval = 6) async -> Bool {
         var request = URLRequest(url: url)
-        request.timeoutInterval = 6
+        request.timeoutInterval = timeout
         guard let (_, response) = try? await session.data(for: request),
               let http = response as? HTTPURLResponse else { return false }
         return (200..<300).contains(http.statusCode)
@@ -208,10 +252,12 @@ actor JuniorClient {
     }
 
     /// Küçük JSON uçları (rutinler vb.): isteği gönderir, yanıt verisini döndürür.
-    func json(method: String, url: URL, token: String, body: [String: Any]? = nil) async throws -> Data {
+    /// `timeout`: model ya da web okuyan beceri uçları (sınav, derin arama) daha uzun bekler.
+    func json(method: String, url: URL, token: String, body: [String: Any]? = nil,
+              timeout: TimeInterval = 15) async throws -> Data {
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 15
+        request.timeoutInterval = timeout
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -221,6 +267,28 @@ actor JuniorClient {
         try check(response: response, data: data)
         return data
     }
+
+    /// Durum kodu anlam taşıyan küçük JSON uçları (uzak komut ve onay: 404/409/410).
+    /// Yalnız ağ hatasında atar; HTTP yanıtı olduğu gibi döner. Zaman aşımı en çok 30 sn.
+    func jsonResponse(method: String, url: URL, token: String, body: [String: Any]? = nil,
+                      timeout: TimeInterval = 30) async throws -> (status: Int, data: Data) {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = min(30, timeout)
+        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+        let (data, response) = try await perform(request)
+        guard let http = response as? HTTPURLResponse else { throw JuniorError.network }
+        // Tünel ayakta ama bilgisayardaki sunucu kapalı: ulaşılamıyor sayılır.
+        if Self.originUnreachable(http.statusCode) { throw JuniorError.network }
+        return (http.statusCode, data)
+    }
+
+    /// Cloudflare tünelinin "arkadaki sunucuya ulaşamadım" kodları.
+    static func originUnreachable(_ status: Int) -> Bool { status == 502 || status == 530 }
 
     /// Bilgisayardaki Junior'in telefona biraktigi isler; alinanlar sunucudan duser.
     func phoneTasks(url: URL, token: String) async throws -> [PhoneTask] {
@@ -250,8 +318,12 @@ actor JuniorClient {
             if first.role == .user, second.role == .assistant, !first.text.isEmpty, !second.text.isEmpty {
                 pairs.append(["role": "user", "content": String(first.text.prefix(2000))])
                 pairs.append(["role": "assistant", "content": String(second.text.prefix(2000))])
+                index += 2
+            } else {
+                // Tek kalan mesaj (kullanıcı sorusu olmadan duyuru, yanıtsız söz) yalnız kendisi atlanır:
+                // ikişer atlamak sonraki bütün çiftleri kaydırıp geçmişten düşürürdü.
+                index += 1
             }
-            index += 2
         }
         return Array(pairs.suffix(JuniorLimits.maxHistoryMessages))
     }
@@ -264,12 +336,49 @@ actor JuniorClient {
         }
     }
 
+    /// Komut isteği. Claude yanıtı 90 sn sürebildiği için istek uzun bekleyebilir (oturumun
+    /// 100 sn sınırı yalnız sunucu ayaktayken işler). Bağlantı ölüyse kullanıcı o kadar
+    /// beklemesin: istek birkaç saniyede bitmezse `/health`'e bakılır; sunucuya ulaşılamıyorsa
+    /// istek bırakılır ve `.network` atılır (komut çevrimdışı kuyruğa girer).
+    private func performCommand(_ request: URLRequest, health: URL?) async throws -> (Data, URLResponse) {
+        let session = self.session
+        let reply = try await withThrowingTaskGroup(of: CommandReply?.self, returning: CommandReply.self) { group in
+            group.addTask {
+                do {
+                    let (data, response) = try await session.data(for: request)
+                    return CommandReply(data: data, response: response)
+                } catch {
+                    throw JuniorError.commandFailure(error)
+                }
+            }
+            if let health {
+                group.addTask {
+                    try await Task.sleep(nanoseconds: UInt64(JuniorClient.reachabilityDelay * 1_000_000_000))
+                    if await self.isReachable(url: health, timeout: JuniorClient.reachabilityTimeout) {
+                        // Sunucu ayakta: yanıt uzun sürse de beklenir.
+                        return nil
+                    }
+                    throw JuniorError.network
+                }
+            }
+            while let next = try await group.next() {
+                if let reply = next {
+                    group.cancelAll()
+                    return reply
+                }
+            }
+            throw JuniorError.noReply
+        }
+        return (reply.data, reply.response)
+    }
+
     private func check(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { throw JuniorError.network }
         if (200..<300).contains(http.statusCode) { return }
         let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         let error = parsed?["error"] as? [String: Any]
         let code = error?["code"] as? String
+        if Self.originUnreachable(http.statusCode) { throw JuniorError.network }
         switch (http.statusCode, code) {
         case (401, _), (403, _): throw JuniorError.unauthorized
         case (429, _): throw JuniorError.rateLimited

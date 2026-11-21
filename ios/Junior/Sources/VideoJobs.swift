@@ -293,6 +293,8 @@ final class VideoJobService: ObservableObject {
 
     /// Uygulama arka plandayken biterse haber ver (on plandayken de banner gorunur).
     static func notifyDone(_ text: String) {
+        // Ayarlar → Bildirimler → "Görev bitti" kapalıysa bildirim yok (sonuç sohbette yine görünür).
+        guard NotificationPreferences.isEnabled(.task) else { return }
         let content = UNMutableNotificationContent()
         content.title = "Videon hazır"
         content.body = String(text.prefix(300))

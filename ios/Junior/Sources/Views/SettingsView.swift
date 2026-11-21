@@ -117,7 +117,14 @@ struct SettingsView: View {
                          + "zorla kapatma kaydı geçici olarak durdurabilir.")
                 }
 
-                LiveSettingsSection(config: config, live: live)
+                // Group: Form'un doğrudan çocuk sayısı (10) artmasın.
+                Group {
+                    InputDeviceSection()
+                    LiveSettingsSection(config: config, live: live)
+                }
+
+                // Ses motoru (Klasik / Gemini Live) ve Gemini Live durum kartı: GeminiLive/GeminiLiveViews.swift
+                GeminiLiveSettingsSection(config: config)
 
                 Section {
                     NavigationLink {
@@ -135,9 +142,16 @@ struct SettingsView: View {
                     } label: {
                         Label { Text("Hafıza") } icon: { SettingIcon(systemName: "brain.head.profile", color: JuniorTheme.cyan) }
                     }
+                    NavigationLink {
+                        SkillsView(config: config)
+                    } label: {
+                        Label { Text("Beceriler") } icon: { SettingIcon(systemName: "square.grid.2x2.fill", color: JuniorTheme.orange) }
+                    }
                 } footer: {
                     Text("Hatırlatmalar, brifing ve kendiliğinden çalışan işler ile Junior’ın senin hakkında hatırladıkları; bilgisayardaki Junior ile ortaktır.")
                 }
+
+                NotificationSettingsSection()
 
                 Section {
                     Button {

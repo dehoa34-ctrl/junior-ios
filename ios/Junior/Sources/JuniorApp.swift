@@ -20,6 +20,8 @@ struct JuniorApp: App {
         GlassesService.configureOnLaunch()
         // Bilgisayardan gelen notlar uygulama acikken de bildirim olarak gorunsun.
         UNUserNotificationCenter.current().delegate = NotificationPresenter.shared
+        // Onay bildiriminin Onayla / Reddet düğmeleri.
+        JuniorNotifications.registerCategories()
     }
 
     var body: some Scene {

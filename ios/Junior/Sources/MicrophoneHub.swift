@@ -18,6 +18,16 @@ final class RequestBox: @unchecked Sendable {
     private var capture: PCMCapture?
     private var live: LiveTap?
     private var recorder: AllDayRecorder?
+    /// Ayarlar'daki giriş TEST'inin seviye ölçeri; diğer tüketicilerden bağımsız.
+    private var meter: LevelMeter?
+    /// Gemini Live oturumu: yalnız konuş düğmesiyle açılan oturum süresince dolu. Sürekli
+    /// dinlemenin ve gün boyu kaydın sesi bu tüketiciye hiçbir zaman verilmez (GeminiMicTap).
+    private var gemini: GeminiMicTap?
+
+    func setGemini(_ value: GeminiMicTap?) {
+        lock.lock(); defer { lock.unlock() }
+        gemini = value
+    }
 
     func set(_ value: SFSpeechAudioBufferRecognitionRequest?, capture: PCMCapture? = nil) {
         lock.lock(); defer { lock.unlock() }
@@ -44,9 +54,14 @@ final class RequestBox: @unchecked Sendable {
         recorder = value
     }
 
+    func setMeter(_ value: LevelMeter?) {
+        lock.lock(); defer { lock.unlock() }
+        meter = value
+    }
+
     var hasConsumer: Bool {
         lock.lock(); defer { lock.unlock() }
-        return request != nil || capture != nil
+        return request != nil || capture != nil || gemini != nil
     }
 
     func append(_ buffer: AVAudioPCMBuffer) {
@@ -55,11 +70,15 @@ final class RequestBox: @unchecked Sendable {
         let copy = capture
         let tap = live
         let allDay = recorder
+        let level = meter
+        let geminiTap = gemini
         lock.unlock()
         current?.append(buffer)
         copy?.append(buffer)
         tap?.append(buffer)
         allDay?.append(buffer)
+        level?.append(buffer)
+        geminiTap?.append(buffer)
     }
 }
 
@@ -309,6 +328,8 @@ final class MicrophoneHub {
     /// tanıma bıraksa bile kapanmaz; yalnız kullanıcı kapatınca/duraklatınca kapanır.
     private var liveWanted = false
     private var allDayRecordingWanted = false
+    /// Ayarlar'daki giriş TEST'i sürüyor mu (motor yalnız test için açılmış olabilir).
+    private var testWanted = false
     private var allDayRecorder: AllDayRecorder?
     private var aliveWatchdog: Task<Void, Never>?
     /// Sistem kesintisi (çağrı, Siri, alarm) başladığı an; bitince nil. Bekçi, kesintiyi
@@ -324,7 +345,9 @@ final class MicrophoneHub {
 
     /// Mikrofon bir servis tarafından tutuluyor mu (o an motor durmuş olsa bile).
     /// Seslendirme bunu sorar: tutulurken ses kategorisi değiştirilmemeli.
-    var isWanted: Bool { wanted || liveWanted || allDayRecordingWanted }
+    var isWanted: Bool { wanted || liveWanted || allDayRecordingWanted || testWanted || geminiWanted }
+    /// Gemini Live oturumu mikrofonu tutuyor mu; başka bir servisin stop()'u motoru kapatmasın.
+    private var geminiWanted = false
 
     private init() {
         let center = NotificationCenter.default
@@ -394,6 +417,20 @@ final class MicrophoneHub {
         box.set(request, capture: capture)
     }
 
+    /// Gemini Live oturumunun mikrofon kolunu bağlar; motor kapalıysa açar. Ses oturumunun
+    /// kategorisi/kipi değişmez. Yalnız kullanıcının açtığı oturum için çağrılır.
+    func attachGemini(_ tap: GeminiMicTap) throws {
+        try start()
+        geminiWanted = true
+        box.setGemini(tap)
+    }
+
+    /// Gemini kolunu çıkarır; mikrofonu bırakmak çağıranın işidir (uyandırma açıksa bırakılmaz).
+    func detachGemini() {
+        geminiWanted = false
+        box.setGemini(nil)
+    }
+
     /// Gün boyu yerel kayıt için aynı ses tap'ine bir kayıt tüketicisi ekler.
     /// Uyandırma/konuşma durdurulsa bile motor bu tüketici için açık kalır.
     func setAllDayRecording(_ enabled: Bool) {
@@ -423,7 +460,7 @@ final class MicrophoneHub {
         allDayRecorder?.stop()
         allDayRecorder = nil
         // Konuşma/uyandırma tanıması ya da sürekli dinleme hâlâ tüketici ise motoru bırakma.
-        guard !box.hasConsumer, !liveWanted else { return }
+        guard !box.hasConsumer, !liveWanted, !testWanted else { return }
         wanted = false
         stopEngine()
     }
@@ -485,6 +522,12 @@ final class MicrophoneHub {
     // yenilenir. Kayıt durursa (iOS uygulamayı askıya aldıysa kod çalışmaz) kimse
     // yenilemez ve bildirim telefonu çaldırır.
     nonisolated static func scheduleAliveAlert() {
+        // Ayarlar → Bildirimler → "Sistem uyarıları" kapalıysa kurulmaz; önceden kurulmuş
+        // olan da silinir, yoksa kayıt sağlamken 3 dk içinde bir kez yanlış uyarı çalardı.
+        guard NotificationPreferences.isEnabled(.system) else {
+            cancelAliveAlert()
+            return
+        }
         let content = UNMutableNotificationContent()
         content.title = "Junior kaydı durmuş olabilir"
         content.body = "Gün boyu yerel kayıt 3 dakikadır parça yazmadı. Sürdürmek için Junior'u aç."
@@ -514,6 +557,16 @@ final class MicrophoneHub {
     /// denince hiçbir şey duyulmuyordu. HFP girişi açıkça seçilince hem
     /// mikrofon hem hoparlör gözlüğe geçer (ses telefon görüşmesi kalitesinde).
     private func preferHeadsetMic(_ session: AVAudioSession) {
+        // Ayarlar'da elle seçilmiş giriş bağlıysa o kullanılır; bağlı değilse aşağıdaki eski kural.
+        let available = (session.availableInputs ?? []).map {
+            InputDevices.make(uid: $0.uid, name: $0.portName, port: $0.portType)
+        }
+        if let chosen = InputDevices.choose(preferredUID: UserDefaults.standard.string(forKey: InputDevices.preferredKey),
+                                            available: available),
+           let port = session.availableInputs?.first(where: { $0.uid == chosen.id }) {
+            if session.preferredInput?.uid != port.uid { try? session.setPreferredInput(port) }
+            return
+        }
         let enabled = (UserDefaults.standard.object(forKey: Self.headsetMicKey) as? Bool) ?? true
         guard enabled else {
             if session.preferredInput != nil { try? session.setPreferredInput(nil) }
@@ -543,8 +596,8 @@ final class MicrophoneHub {
         wanted = allDayRecordingWanted
         retryTask?.cancel()
         box.set(nil)
-        // Sürekli dinleme ya da gün boyu kayıt açıksa mikrofon bırakılmaz; yalnız tanıma bırakıldı.
-        guard !liveWanted, !allDayRecordingWanted else {
+        // Sürekli dinleme, gün boyu kayıt, giriş TEST'i ya da Gemini oturumu açıksa mikrofon bırakılmaz; yalnız tanıma bırakıldı.
+        guard !liveWanted, !allDayRecordingWanted, !testWanted, !geminiWanted else {
             recover()
             return
         }
@@ -589,10 +642,36 @@ final class MicrophoneHub {
     func disableLive() {
         liveWanted = false
         box.setLive(nil)
-        guard !wanted, !allDayRecordingWanted else {
+        guard !wanted, !allDayRecordingWanted, !testWanted else {
             try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .spokenAudio, options: categoryOptions)
             return
         }
+        retryTask?.cancel()
+        stopEngine()
+    }
+
+    // MARK: - Giriş TEST'i (Ayarlar)
+
+    /// Seviye ölçümünü başlatır. Ölçer aynı tap'e **ayrı bir tüketici** olarak eklenir:
+    /// uyandırma, sürekli dinleme ve gün boyu kayıt çalışıyorsa durdurulmaz, sesleri aynen
+    /// akmaya devam eder. Motor kapalıysa yalnız test için açılır, `stopLevelTest` kapatır.
+    func startLevelTest(_ meter: LevelMeter) throws {
+        testWanted = true
+        box.setMeter(meter)
+        do {
+            try startEngine()
+        } catch {
+            // Ses yolu değişiyorsa motor kendini toparlar; ölçer kalır, test süresince dener.
+            recover()
+            throw error
+        }
+    }
+
+    /// Ölçümü bırakır; motor yalnız test için açıldıysa kapanır.
+    func stopLevelTest() {
+        testWanted = false
+        box.setMeter(nil)
+        guard !wanted, !liveWanted, !allDayRecordingWanted else { return }
         retryTask?.cancel()
         stopEngine()
     }

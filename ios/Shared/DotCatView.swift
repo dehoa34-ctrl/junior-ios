@@ -8,6 +8,8 @@ struct DotCatView: View {
     /// Izgara genişliği. Verilmezse boyuta göre seçilir (ada için). Uygulamadaki
     /// rozetler 15 ister: 12 sütunda gözler düşüyor, yüz "W" gibi görünüyordu.
     var columns: Int? = nil
+    /// Yüz ifadesi (mutlu, üzgün, konuşuyor …). Verilmezse eski yüz: açık ya da kapalı göz.
+    var expression: CatExpression? = nil
 
     var body: some View {
         Canvas { context, size in
@@ -23,7 +25,9 @@ struct DotCatView: View {
                 for col in 0..<columns {
                     let gx = -1.0 + Double(col) * step
                     let gy = -1.0 + Double(row) * step
-                    let w = JuniorDots.weight(x: gx, y: gy + 0.08, eyesClosed: eyesClosed)
+                    let w = expression.map {
+                        JuniorDots.weight(x: gx, y: gy + 0.08, expression: $0, eyesClosed: eyesClosed)
+                    } ?? JuniorDots.weight(x: gx, y: gy + 0.08, eyesClosed: eyesClosed)
                     guard w > 0 else { continue }
                     let cx = originX + (gx + 1) / 2 * side
                     let cy = originY + (gy + 1) / 2 * side

@@ -13,6 +13,7 @@ struct RootView: View {
     @StateObject private var handsFree: HandsFreeSession
     @State private var draft = ""
     @State private var showSettings = false
+    @State private var showSkills = false
     @State private var showCamera = false
     @State private var showLibrary = false
     @State private var photoItem: PhotosPickerItem?
@@ -25,6 +26,16 @@ struct RootView: View {
     @StateObject private var phoneTasks: PhoneTaskService
     /// Telefonda sürekli dinleme: konuşma parçaları kesilip bilgisayara yüklenir.
     @StateObject private var live: LiveListenService
+    /// Kedinin yüzü: son sonuç (mutlu / üzgün) ve son etkinlik.
+    @ObservedObject private var mood = JuniorMood.shared
+    /// Sohbetteki video bağlantısından açılan oynatıcı.
+    @State private var playing: PlayableVideo?
+    /// "Panodakini sor" önerileri; boş değilken seçim penceresi açıktır.
+    @State private var clipboardOptions: [ClipboardAsk.Option] = []
+    @State private var clipboardText = ""
+    /// Gemini Live sesli oturumu (Ayarlar > Ses motoru); düşerse klasik yola döner.
+    @StateObject private var gemini: GeminiLiveSession
+    @AppStorage(VoiceEngine.storageKey) private var voiceEngine: VoiceEngine = .classic
     @Environment(\.scenePhase) private var scenePhase
 
     init(config: Config, speech: SpeechService) {
@@ -43,8 +54,26 @@ struct RootView: View {
         _wakeWord = StateObject(wrappedValue: wakeWord)
         _glasses = StateObject(wrappedValue: glasses)
         _store = StateObject(wrappedValue: store)
-        _handsFree = StateObject(wrappedValue: HandsFreeSession(
-            wakeWord: wakeWord, speech: speech, glasses: glasses, store: store))
+        let handsFree = HandsFreeSession(wakeWord: wakeWord, speech: speech, glasses: glasses, store: store)
+        _handsFree = StateObject(wrappedValue: handsFree)
+        let gemini = GeminiLiveSession(config: config, speech: speech, store: store, hooks: GeminiLiveSession.Hooks(
+            pauseWake: { [weak wakeWord] in wakeWord?.pauseForRecording() },
+            resumeWake: { [weak wakeWord] in wakeWord?.resumeAfterRecording() },
+            releaseMic: { [weak wakeWord] in
+                if wakeWord?.running != true { MicrophoneHub.shared.stop() }
+            },
+            classic: { [weak wakeWord, weak handsFree, weak store] step in
+                switch step {
+                case .send(let text):
+                    wakeWord?.resumeAfterRecording()
+                    store?.send(text: text)
+                case .listen:
+                    handsFree?.beginTurn()
+                }
+            }))
+        // Canlı oturum sürerken klasik döngü tur açmaz, uyandırmayı yeniden başlatmaz.
+        handsFree.externalVoiceActive = { [weak gemini] in gemini?.isActive == true }
+        _gemini = StateObject(wrappedValue: gemini)
         _server = StateObject(wrappedValue: ServerMonitor(
             healthURL: { [weak config] in config?.url(path: "/health") },
             probe: demo ? { (_: URL) async -> Bool in true } : nil))
@@ -64,6 +93,13 @@ struct RootView: View {
         .preferredColorScheme(.dark)
         .tint(JuniorTheme.cyan)
         .sheet(isPresented: $showSettings) { SettingsView(config: config, store: store, glasses: glasses, live: live) }
+        .sheet(item: $playing) { video in videoSheet(video) }
+        .confirmationDialog("Panodakini sor", isPresented: clipboardShown, titleVisibility: .visible) {
+            clipboardButtons
+        } message: {
+            Text(String(clipboardText.prefix(160)))
+        }
+        .sheet(isPresented: $showSkills) { SkillsSheet(config: config) }
         .onAppear {
             #if DEBUG
             if let scene = DemoMode.scene {
@@ -82,6 +118,11 @@ struct RootView: View {
             phoneTasks.start()
             store.resumeVideoJob()
             live.sync()
+            JuniorNotifications.attach(config)
+            RemoteConfirmCenter.shared.start()
+            store.resumeRemoteResults()
+            store.flushOfflineQueue()
+            refreshGemini()
         }
         // One donunce yeniden bak: bilgisayar bu arada kapanmis olabilir.
         // Arka planda yeniden deneme dongusu durur; cepteyken aga cikmasin.
@@ -92,10 +133,24 @@ struct RootView: View {
                 phoneTasks.start()
                 store.resumeVideoJob()
                 live.sync()
+                RemoteConfirmCenter.shared.start()
+                store.resumeRemoteResults()
+                // Pomodoro bu arada masaüstünden durmuş olabilir: bekleyen bildirim kalmasın.
+                Task { await PomodoroAlertSync.refreshIfScheduled(config: config) }
+                refreshGemini()
             } else if scenePhase == .background {
                 server.pause()
                 phoneTasks.pause()
+                RemoteConfirmCenter.shared.pause()
             }
+        }
+        // Bilgisayar geri geldi: çevrimdışıyken sıraya giren komutlar sırayla gider.
+        .onChange(of: server.serverUp) {
+            if server.serverUp == true { store.flushOfflineQueue() }
+        }
+        // Komut sıraya girdiyse bağlantı durumu hemen yeniden denetlensin (başlık "ulaşılamıyor" desin).
+        .onChange(of: store.offlineQueue.waiting.count) {
+            if !store.offlineQueue.waiting.isEmpty { server.check() }
         }
         .onChange(of: config.continuousEnabled) {
             handsFree.continuousEnabled = config.continuousEnabled
@@ -115,7 +170,13 @@ struct RootView: View {
             if !showSettings {
                 syncWakeWord()
                 server.check()
+                refreshGemini()
             }
+        }
+        // Motor yeniden seçildi: geri düşüş engeli kalkar; klasiğe geçilince açık oturum kapanır.
+        .onChange(of: voiceEngine) {
+            gemini.allow()
+            if voiceEngine == .classic { gemini.stop() }
         }
         // Adres Ayarlar'da yazilirken ya da QR eslestirmesiyle degisir; her
         // tusta degil, yazma durunca bakilir.
@@ -165,6 +226,7 @@ struct RootView: View {
 
     /// Ekranın rengini ve kedinin halini belirleyen adım.
     private var visualPhase: JuniorActivityPhase {
+        if gemini.isActive { return gemini.modelSpeaking ? .speaking : .listening }
         if speech.state == .listening { return .listening }
         switch handsFree.phase {
         case .capturing: return .looking
@@ -179,11 +241,19 @@ struct RootView: View {
 
     private var isBusy: Bool { visualPhase != .waiting }
 
+    /// Kedinin yüz ifadesi: o anki adım ve son sonuç (bitti → mutlu, olmadı → üzgün).
+    private func catExpression(at now: Date) -> CatExpression {
+        mood.expression(phase: isBusy ? visualPhase : .waiting, now: now)
+    }
+
     // MARK: - Başlık
 
     private var header: some View {
         HStack(spacing: 12) {
-            CatBadge(phase: isBusy ? visualPhase : .listening, size: 42)
+            // Uzun boşlukta uyuklama ve sonucun yüzden silinmesi zamanla değişir.
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                CatBadge(phase: isBusy ? visualPhase : .listening, size: 42, expression: catExpression(at: context.date))
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text("Junior").font(JuniorTheme.rounded(.title3, .bold))
                 headerStatus
@@ -193,6 +263,8 @@ struct RootView: View {
             CircleIconButton(systemName: "square.and.pencil", label: "Yeni sohbet") { store.clear() }
                 .disabled(store.messages.isEmpty)
                 .opacity(store.messages.isEmpty ? 0.4 : 1)
+            // Beceriler: hava, arama, pomodoro, su, kalori, şınav, tekrar kartları, sınav.
+            CircleIconButton(systemName: "square.grid.2x2.fill", label: "Beceriler") { showSkills = true }
             CircleIconButton(systemName: "gearshape.fill", label: "Ayarlar") { showSettings = true }
         }
         .padding(.horizontal, 16)
@@ -226,7 +298,7 @@ struct RootView: View {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if store.messages.isEmpty { emptyState }
                     ForEach(store.messages) { message in
-                        MessageRow(message: message).id(message.id)
+                        MessageRow(message: message, onPlay: { playing = PlayableVideo(url: $0) }).id(message.id)
                     }
                     if store.isSending { TypingRow() }
                     Color.clear.frame(height: 4).id("bottom")
@@ -251,7 +323,8 @@ struct RootView: View {
                     .fill(RadialGradient(colors: [JuniorTheme.cyan.opacity(0.28), .clear],
                                          center: .center, startRadius: 10, endRadius: 110))
                     .frame(width: 220, height: 220)
-                JuniorCat(phase: isBusy ? visualPhase : .listening, size: 128, glow: true)
+                JuniorCat(phase: isBusy ? visualPhase : .listening, size: 128, glow: true,
+                          expression: catExpression(at: Date()))
             }
             .padding(.top, 18)
             VStack(spacing: 8) {
@@ -336,6 +409,9 @@ struct RootView: View {
                        onClose: { store.errorText = nil }) { store.retry() }
         }
         if store.pendingTargetQuestion != nil { targetChooser }
+        // Bilgisayardan onay istekleri ve çevrimdışı sırada bekleyen komutlar.
+        RemoteConfirmCard(center: .shared)
+        OfflineQueueCard(store: store)
         VideoJobRow(service: store.videoJobs)
         if preparingVideo || store.pendingVideo != nil { videoChip }
     }
@@ -344,7 +420,10 @@ struct RootView: View {
     /// boştayken "Hey Junior" dinlemesinin hali.
     @ViewBuilder
     private var liveCard: some View {
-        if speech.state == .listening || speech.transcribing {
+        if gemini.isActive {
+            GeminiLiveCard(session: gemini)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if speech.state == .listening || speech.transcribing {
             ListeningCard(route: speech.route, text: speech.partialText, transcribing: speech.transcribing)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
         } else if let status = handsFreeStatus {
@@ -378,6 +457,10 @@ struct RootView: View {
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 10) {
             Menu {
+                // Pano yalnız buna basınca okunur; iOS o an yapıştırma iznini sorar.
+                Button { askAboutClipboard() } label: {
+                    Label("Panodakini sor", systemImage: "doc.on.clipboard")
+                }
                 Button { showCamera = true } label: {
                     Label("Fotoğraf çek", systemImage: "camera")
                 }
@@ -397,7 +480,8 @@ struct RootView: View {
                     .frame(width: 46, height: 46)
                     .background(JuniorTheme.surfaceStrong, in: Circle())
             }
-            .disabled(store.isSending)
+            // Gemini Live açıkken fotoğraf/kamera/gözlük klasik yoldan yanıtlanır, sesler çakışırdı.
+            .disabled(store.isSending || gemini.isActive)
             .accessibilityLabel("Ekle")
 
             TextField("Junior'a yaz…", text: $draft, axis: .vertical)
@@ -410,8 +494,12 @@ struct RootView: View {
                 .onSubmit(sendDraft)
 
             if draft.isEmpty && store.pendingVideo == nil {
-                MicButton(listening: speech.state == .listening, action: toggleMic)
-                    .disabled(store.isSending || !store.canSend)
+                // Kısa dokunuş eski tıkla-konuş; basılı tutma bas-konuş (bırakınca gönderir,
+                // yukarı kaydırıp bırakınca iptal); Junior konuşurken basmak onu susturur.
+                // Gemini Live seçiliyken dokunuş da basılı tutma da oturumu açar/kapatır.
+                PushToTalkButton(listening: speech.state == .listening || gemini.isActive,
+                                 speaking: speech.state == .speaking,
+                                 enabled: !store.isSending && store.canSend, onAction: pushToTalk)
                     .opacity(store.isSending || !store.canSend ? 0.45 : 1)
             } else {
                 Button(action: sendDraft) {
@@ -549,6 +637,19 @@ struct RootView: View {
     private func sendDraft() {
         let text = draft
         draft = ""
+        // Gemini Live açıkken yazılan canlı oturuma gider (GeminiComposerRoute): klasik yanıt
+        // Gemini sesiyle aynı anda okunmasın, uyandırma dinlemesi oturum sürerken açılmasın.
+        switch GeminiComposerRoute.decide(sessionActive: gemini.isActive, text: text, hasVideo: store.pendingVideo != nil) {
+        case .gemini(let typed):
+            gemini.sendText(typed)
+            return
+        case .ignore:
+            return
+        case .endSessionThenClassic:
+            gemini.stop()
+        case .classic:
+            break
+        }
         // Video ekliyse mesaj kurgu istegidir; gozlukten kare cekilmez.
         if store.pendingVideo != nil {
             store.send(text: text)
@@ -567,10 +668,113 @@ struct RootView: View {
     /// uyandirma motorunun duraklatilip geri alinmasi tek yerde kalir.
     private func toggleMic() {
         composerFocused = false
-        if speech.state == .listening {
+        // Gemini Live açıksa aynı düğme oturumu kapatır.
+        if gemini.isActive {
+            gemini.stop()
+        } else if speech.state == .listening {
             speech.stopListening()
+        } else if gemini.route(for: voiceEngine) == .gemini, handsFree.phase == .waiting || handsFree.phase == .off {
+            // Klasik tur sürerken (düşünüyor/konuşuyor) açılmaz: döngü o turu bitirmeli.
+            gemini.start()
         } else {
             handsFree.beginTurn()
+        }
+    }
+
+    // MARK: - Bas-konuş
+
+    private func pushToTalk(_ action: PushToTalk.Action) {
+        composerFocused = false
+        // Gemini Live oturumu sürüyorsa ya da Gemini seçiliyse basılı tutma klasik kaydı açmaz:
+        // Gemini sesi kendisi dinler, "bırakınca gönder" yoktur. Dokunuş ve basış oturumu açar/kapatır.
+        if gemini.isActive || gemini.route(for: voiceEngine) == .gemini {
+            switch action {
+            case .tap, .startRecording:
+                toggleMic()
+            case .silence:
+                if gemini.isActive { gemini.stop() } else { handsFree.interruptSpeaking() }
+            case .none, .send, .cancel:
+                break
+            }
+            return
+        }
+        switch action {
+        case .none:
+            break
+        case .silence:
+            handsFree.interruptSpeaking()
+        case .tap:
+            toggleMic()
+        case .startRecording:
+            // Basılıyken sessizlik dinlemeyi bitirmez; gönderen bırakmaktır (SpeechService.holdOpen).
+            speech.holdOpen = true
+            // Tıkla-konuşla açılmış dinleme sürüyorsa yenisi açılmaz; bırakınca o gönderilir.
+            if speech.state != .listening { handsFree.beginTurn() }
+        case .send:
+            finishHold(cancel: false)
+        case .cancel:
+            finishHold(cancel: true)
+        }
+    }
+
+    /// Basılı tutma bitti. Dinleme "bip" sesinden sonra (~0,2 sn, ilk seferde izin sorusundan
+    /// sonra) açılır; çok kısa basışta henüz açılmamış olabilir, en çok 2 sn beklenir.
+    private func finishHold(cancel: Bool) {
+        Task { @MainActor in
+            for _ in 0..<20 where speech.state != .listening && handsFree.phase == .listening {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            // Tutma her durumda kalkar: dinleme hiç açılmadıysa sonradan açılan dinleme
+            // sessizlikle bitebilsin (dinleme bittiyse SpeechService zaten kaldırmıştır).
+            defer { speech.holdOpen = false }
+            guard speech.state == .listening else { return }
+            if cancel { speech.cancelListening() } else { speech.stopListening() }
+        }
+    }
+
+    // MARK: - Pano ve video
+
+    private func askAboutClipboard() {
+        guard store.canSend else {
+            showSettings = true
+            return
+        }
+        guard let text = ClipboardAsk.readNow(), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            store.errorText = "Pano boş. Bir bağlantı ya da metin kopyalayıp yeniden dene."
+            return
+        }
+        clipboardText = text
+        clipboardOptions = ClipboardAsk.options(for: text)
+    }
+
+    private func askClipboard(_ option: ClipboardAsk.Option) {
+        clipboardOptions = []
+        store.send(text: option.prompt)
+    }
+
+    private var clipboardShown: Binding<Bool> {
+        Binding(get: { !clipboardOptions.isEmpty }, set: { if !$0 { clipboardOptions = [] } })
+    }
+
+    @ViewBuilder
+    private var clipboardButtons: some View {
+        ForEach(clipboardOptions) { option in
+            Button(option.title) { askClipboard(option) }
+        }
+        Button("Yazı alanına koy") {
+            draft = String(clipboardText.prefix(JuniorLimits.maxMessageChars))
+            clipboardOptions = []
+        }
+        Button("Vazgeç", role: .cancel) { clipboardOptions = [] }
+    }
+
+    private func videoSheet(_ video: PlayableVideo) -> some View {
+        VideoPlayerSheet(source: video.url, config: config) { effect in
+            switch effect {
+            case .pauseWakeWord: handsFree.holdWakeWord(true)
+            case .resumeWakeWord: handsFree.holdWakeWord(false)
+            case .none: break
+            }
         }
     }
 
@@ -590,6 +794,12 @@ struct RootView: View {
                     ?? "Gözlükten fotoğraf alınamadı."
             }
         }
+    }
+
+    /// Gemini seçiliyse sunucudaki durumu okur: sorun bilgisayarda çözüldüyse geri düşüş engeli kalkar.
+    private func refreshGemini() {
+        guard voiceEngine == .geminiLive, store.canSend else { return }
+        Task { await gemini.refreshStatus() }
     }
 
     private func syncWakeWord() {
@@ -828,10 +1038,35 @@ private struct VideoJobRow: View {
     }
 }
 
+/// Oynatıcı sayfasının konusu (sheet(item:) kimlik ister).
+struct PlayableVideo: Identifiable, Equatable {
+    let url: URL
+    var id: String { url.absoluteString }
+}
+
 private struct MessageRow: View {
     let message: ChatMessage
+    /// Mesajda video bağlantısı varsa altında "Oynat" düğmesi çıkar.
+    var onPlay: ((URL) -> Void)?
 
     var body: some View {
+        VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 6) {
+            bubble
+            if let onPlay, let video = VideoLink.first(in: message.text) {
+                Button { onPlay(video) } label: {
+                    Label("Videoyu oynat", systemImage: "play.rectangle.fill")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .tint(JuniorTheme.cyan)
+                .padding(.leading, message.role == .user ? 0 : 38)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+    }
+
+    @ViewBuilder
+    private var bubble: some View {
         if message.role == .user {
             HStack {
                 Spacer(minLength: 56)

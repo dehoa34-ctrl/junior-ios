@@ -20,6 +20,11 @@ final class JuniorLiveActivity {
     private var handsFreeOn = false
     private var lastDetail = ""
     private var lastGlasses = false
+    /// Bilgisayardan bekleyen onay: varken ada Onayla/Reddet düğmelerini gösterir ve kapanmaz.
+    private var confirm: (id: String, text: String, expiresAt: Date)?
+    /// Onay yokken gösterilecek adım (döngünün ya da isteğin son hâli).
+    private var basePhase: JuniorActivityPhase = .done
+    private var requestActive = false
 
     var isEnabled: Bool {
         (UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool) ?? true
@@ -28,6 +33,11 @@ final class JuniorLiveActivity {
     private init() {
         // Uygulama yeniden açıldıysa önceki oturumdan kalan etkinliği sahiplen.
         activity = Activity<JuniorActivityAttributes>.activities.first
+        // Süreç yeniden başladıysa (iOS sonlandırdı, ada ya da bildirim düğmesi uygulamayı arka
+        // planda açtı) adada kalan onay da sahiplenilir: ilk yoklama ya da karar onu kaldırabilsin.
+        if let content = activity?.content, let id = content.state.confirmID {
+            confirm = (id, content.state.detail, content.staleDate ?? Date())
+        }
     }
 
     // MARK: - Girdiler
@@ -48,6 +58,7 @@ final class JuniorLiveActivity {
 
     /// Eller serbest kapalıyken bir istek başladı / bitti.
     func request(sending: Bool, detail: String) {
+        requestActive = sending
         guard !handsFreeOn else {
             if !detail.isEmpty { lastDetail = detail }
             return
@@ -59,6 +70,32 @@ final class JuniorLiveActivity {
             show(.done)
             finish(after: 8)
         }
+    }
+
+    /// Bilgisayardaki Junior onay istiyor: adada Onayla/Reddet (iOS 17 etkileşimli düğme).
+    /// - expiresAt: onayın sona erme anı; ada o an "eski" sayılır ve düğmeler gizlenir.
+    func showConfirm(id: String, text: String, expiresAt: Date) {
+        if let current = confirm, current.id == id, current.text == text, current.expiresAt == expiresAt { return }
+        confirm = (id, text, expiresAt)
+        show(basePhase)
+    }
+
+    /// Onay kapandı (karar verildi, süresi doldu): ada önceki hâline döner.
+    func clearConfirm() {
+        // Bellekte onay olmasa da adada düğme kalmış olabilir (önceki süreçten).
+        let leftover = activity?.content.state.confirmID != nil
+        guard confirm != nil || leftover else { return }
+        confirm = nil
+        guard activity != nil else { return }
+        show(basePhase)
+        if !handsFreeOn, !requestActive { finish(after: 3) }
+    }
+
+    /// Kedinin ifadesi değişti (son sonucun gösterim süresi doldu): açık ada yeni yüzü alır.
+    /// Kapanmak üzere olan (bitiş zamanlayıcısı kurulu) ada yeniden açılmaz.
+    func refreshExpression() {
+        guard activity != nil, endTask == nil else { return }
+        show(basePhase)
     }
 
     /// Ayar kapatıldı ya da uygulama kapanıyor.
@@ -74,13 +111,23 @@ final class JuniorLiveActivity {
     // MARK: - İç işleyiş
 
     private func state(_ phase: JuniorActivityPhase) -> ActivityContent<JuniorActivityAttributes.ContentState> {
-        let detail = String(lastDetail.replacingOccurrences(of: "\n", with: " ").prefix(160))
-        let s = JuniorActivityAttributes.ContentState(phase: phase.rawValue, detail: detail, glasses: lastGlasses, updatedAt: Date())
-        // 15 dk güncelleme gelmezse sistem etkinliği "eski" gösterir.
-        return ActivityContent(state: s, staleDate: Date().addingTimeInterval(15 * 60))
+        // Bekleyen onay her adımın önüne geçer: kullanıcı kararını adadan verebilsin.
+        let shown = confirm == nil ? phase : .confirm
+        let source = confirm?.text ?? lastDetail
+        let detail = String(source.replacingOccurrences(of: "\n", with: " ").prefix(160))
+        // Adadaki kedi uygulamadakiyle aynı yüzü taşır (son sonuç: mutlu / üzgün).
+        let expression = JuniorMood.shared.expression(phase: shown)
+        let s = JuniorActivityAttributes.ContentState(phase: shown.rawValue, detail: detail, glasses: lastGlasses,
+                                                      updatedAt: Date(), confirmID: confirm?.id,
+                                                      expression: expression.rawValue)
+        // 15 dk güncelleme gelmezse sistem etkinliği "eski" gösterir; onay varken onayın
+        // süresi dolunca (uygulama askıda kalsa da widget düğmeleri gizler).
+        let now = Date()
+        return ActivityContent(state: s, staleDate: JuniorConfirmDisplay.staleDate(now: now, confirmExpiresAt: confirm?.expiresAt))
     }
 
     private func show(_ phase: JuniorActivityPhase) {
+        if phase != .confirm { basePhase = phase }
         guard isEnabled else {
             endNow()
             return
@@ -108,6 +155,8 @@ final class JuniorLiveActivity {
 
     private func finish(after seconds: Double) {
         endTask?.cancel()
+        // Onay beklerken ada kapanmaz; onay kapanınca clearConfirm bitirir.
+        guard confirm == nil else { return }
         guard let current = activity else { return }
         endTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))

@@ -110,6 +110,10 @@ final class HandsFreeSession: ObservableObject {
 
     /// Sürekli konuşma açık mı; Ayarlar'dan gelir.
     var continuousEnabled = true
+    /// Başka bir sesli oturum (Gemini Live) mikrofonu ve hoparlörü tutuyor mu; RootView bağlar.
+    /// Tutuyorsa klasik tur açılmaz ve "Hey Junior" dinlemesi yeniden başlatılmaz: model
+    /// "Junior" deyince ikinci bir dinleme turu Gemini'yle paralel açılırdı.
+    var externalVoiceActive: @MainActor () -> Bool = { false }
     /// Şu an sürekli bir sohbetin içinde miyiz. Uyandırma sözcüğüyle açılır,
     /// "kapat" denince ya da sessiz kalınca kapanır.
     @Published private(set) var continuousActive = false
@@ -155,7 +159,7 @@ final class HandsFreeSession: ObservableObject {
                 // seslendiriliyor, dolayısıyla uyandırma dinlemesi bu sırada
                 // kapalı kalmalı; yoksa döngü dışındaki her yanıt kendini
                 // tetikleyebilir. Hata metni seslendirilmez: ekranda görünüyor.
-                guard error == nil else { return }
+                guard error == nil, !self.externalVoiceActive() else { return }
                 self.phase = .speaking
                 self.wakeWord.pauseForRecording()
             default:
@@ -191,7 +195,7 @@ final class HandsFreeSession: ObservableObject {
     /// ama bir daha hiç geri alınmıyordu; ilk "Hey Junior" çalışıyor, sonraki
     /// hiçbiri çalışmıyordu.
     func beginTurn() {
-        guard phase == .waiting || phase == .off else { return }
+        guard phase == .waiting || phase == .off, !externalVoiceActive() else { return }
         phase = .listening
         usedGlasses = false
         if continuousEnabled, idlePhase == .waiting { continuousActive = true }
@@ -219,6 +223,34 @@ final class HandsFreeSession: ObservableObject {
                 self.speech.speak("Mikrofonu açamadım.")
             }
         }
+    }
+
+    /// Video sesi açıkken "Hey Junior" dinlemesi duraklatılır: videodaki konuşma Junior'ı
+    /// uyandırmasın. Tutulurken tur bitişleri dinlemeyi kendiliğinden geri açmaz.
+    private(set) var wakeWordHeld = false
+
+    func holdWakeWord(_ hold: Bool) {
+        guard hold != wakeWordHeld else { return }
+        wakeWordHeld = hold
+        if hold {
+            wakeWord.pauseForRecording()
+        } else if phase == .waiting {
+            wakeWord.resumeAfterRecording()
+        }
+    }
+
+    /// Bas-konuş: Junior konuşurken düğmeye basıldı, ses kesilir.
+    ///
+    /// `stopSpeaking` bitiş geri çağrısını tetiklemez; döngü burada beklemeye döndürülmezse
+    /// "konuşuyor" adımında bekçi dolana (60 sn) kadar takılı kalırdı. Sürekli sohbet de biter:
+    /// kullanıcı sözü kesti, ardından kendiliğinden yeni dinleme açılmamalı.
+    func interruptSpeaking() {
+        speech.stopSpeaking()
+        guard phase == .speaking else { return }
+        continuousActive = false
+        phase = idlePhase
+        releaseMicrophoneIfIdle()
+        if !wakeWordHeld { wakeWord.resumeAfterRecording() }
     }
 
     private func handle(_ text: String) {
@@ -314,6 +346,13 @@ final class HandsFreeSession: ObservableObject {
         speech.stopSpeaking()
         speech.stopListening()
         releaseMicrophoneIfIdle()
+        resumeWakeWord()
+    }
+
+    /// Uyandırma dinlemesine döner; Gemini Live oturumu sürüyorsa dönmez (oturum kapanınca
+    /// GeminiLiveSession kendisi döndürür).
+    private func resumeWakeWord() {
+        guard !externalVoiceActive(), !wakeWordHeld else { return }
         wakeWord.resumeAfterRecording()
     }
 
@@ -327,8 +366,8 @@ final class HandsFreeSession: ObservableObject {
         }
         phase = idlePhase
         releaseMicrophoneIfIdle()
-        // Uyandirma hic calismiyorsa bu cagri zaten bir sey yapmaz.
-        wakeWord.resumeAfterRecording()
+        // Uyandirma hic calismiyorsa bu cagri zaten bir sey yapmaz. Video sesi aciksa bekler.
+        resumeWakeWord()
     }
 
     /// Uyandırma kapalıyken tur bitince mikrofonu bırakır. Bırakılmazsa elle

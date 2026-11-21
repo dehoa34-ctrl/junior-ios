@@ -152,6 +152,8 @@ final class RoutinesModel: ObservableObject {
             let data = try await client.json(method: "GET", url: url, token: token)
             guard let parsed = RoutineListing.parse(data) else { throw JuniorError.server("Rutin listesi okunamadı.") }
             listing = parsed
+            // Bildirim kapısı sessiz saatleri buradan da öğrenir (değişiklik hemen geçerli olsun).
+            QuietHoursSource.shared.remember(parsed)
             error = nil
         } catch {
             self.error = Self.describe(error)

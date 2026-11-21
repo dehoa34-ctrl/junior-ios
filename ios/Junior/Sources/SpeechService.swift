@@ -45,6 +45,19 @@ final class SpeechService: NSObject, ObservableObject {
     private static let silenceBeforeSpeech: TimeInterval = 6
 
     private var silenceTimer: Timer?
+    /// Dinlemenin açıldığı an; bas-konuşun üst sınırı (`PushToTalk.holdLimit`) buna göre.
+    private var listeningStarted = Date()
+
+    /// Bas-konuş: düğme basılıyken sessizlik dinlemeyi bitirmez; yalnız bırakma
+    /// (`stopListening`) ya da yukarı kaydırıp bırakma (`cancelListening`) bitirir. Eskiden
+    /// basılıyken de 2,8 sn sessizlik söyleneni gönderiyordu: duraksayınca yarım cümle gidiyor,
+    /// ardından iptal işe yaramıyordu. Dinleme açılmadan önce de kurulabilir (bas-konuş
+    /// dinlemeyi "bip"ten sonra açar); her dinlemenin sonunda kendiliğinden kapanır.
+    var holdOpen = false {
+        didSet {
+            if holdOpen != oldValue, state == .listening { restartSilenceTimer() }
+        }
+    }
     private var onFinish: ((String) -> Void)?
     private var player: AVAudioPlayer?
     private var cuePlayer: AVAudioPlayer?
@@ -127,6 +140,7 @@ final class SpeechService: NSObject, ObservableObject {
             // "mikrofon baslatilamadi" ile dusuyordu.
             try MicrophoneHub.shared.attach(request, capture: capture)
             state = .listening
+            listeningStarted = Date()
             // Ses oturumu acildiktan sonra bakiyoruz: yol ancak o zaman kesinlesir.
             route.beginListening()
 
@@ -161,10 +175,22 @@ final class SpeechService: NSObject, ObservableObject {
         finishListening()
     }
 
+    /// Bas-konuşta yukarı kaydırıp bırakma: dinleme biter, söylenen gönderilmez. Geri çağrı
+    /// boş metinle gelir; eller serbest döngüsü bunu "duyulmadı" sayıp beklemeye döner.
+    func cancelListening() {
+        guard state == .listening else { return }
+        partialText = ""
+        capture = nil
+        finishListening()
+    }
+
     private func restartSilenceTimer() {
         silenceTimer?.invalidate()
         // Henuz tek kelime duyulmadiysa daha uzun bekle.
-        let wait = partialText.isEmpty ? Self.silenceBeforeSpeech : Self.silenceAfterSpeech
+        let normal = partialText.isEmpty ? Self.silenceBeforeSpeech : Self.silenceAfterSpeech
+        // Bas-konuşta düğme basılıyken sessizlik bitirmez; yalnız üst sınır kalır.
+        let wait = PushToTalk.silenceWait(normal: normal, holding: holdOpen,
+                                          elapsed: Date().timeIntervalSince(listeningStarted))
         silenceTimer = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.finishListening() }
         }
@@ -227,6 +253,8 @@ final class SpeechService: NSObject, ObservableObject {
         task?.cancel()
         task = nil
         state = .idle
+        // Bas-konuş tutması yalnız bu dinleme içindi (durum artık .idle; zamanlayıcı kurulmaz).
+        holdOpen = false
     }
 
     /// Yaniti seslendirir. Sunucudaki dogal ses parca parca istenir: ilk (kisa)

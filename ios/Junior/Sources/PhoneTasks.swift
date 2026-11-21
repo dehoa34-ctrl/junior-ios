@@ -13,6 +13,14 @@ struct PhoneTask: Equatable {
     let url: URL?
     /// Yalniz hatirlatici icin
     let at: Date?
+    /// Bildirim türü: sunucunun `category` ("task", "routine" …) ve `builtin` ("checkin", "watch") alanları.
+    var category: String? = nil
+    var builtin: String? = nil
+
+    /// Ayarlar'daki bildirim kategorisi; nil ise bilgisayardan açıkça gönderilmiş (her zaman görünür).
+    var notificationCategory: NotificationCategory? {
+        NotificationCategory.from(server: category, builtin: builtin, kind: kind.rawValue)
+    }
 
     /// Sunucu yaniti: {"tasks": [{"id", "kind", "text", "url", "at" (ms)}]}.
     /// Bozuk ya da bilinmeyen kayitlar atlanir; biri digerlerini engellemez.
@@ -35,7 +43,8 @@ struct PhoneTask: Equatable {
             case .reminder: if at == nil || text.isEmpty { return nil }
             case .note, .clipboard: if text.isEmpty { return nil }
             }
-            return PhoneTask(id: id, kind: kind, text: text, url: url, at: at)
+            return PhoneTask(id: id, kind: kind, text: text, url: url, at: at,
+                             category: item["category"] as? String, builtin: item["builtin"] as? String)
         }
     }
 
@@ -113,6 +122,8 @@ final class PhoneTaskService: ObservableObject {
     }
 
     private static func notify(_ task: PhoneTask, at date: Date? = nil) async {
+        // Kapalı kategori bildirim üretmez; yoklama/izleme sessiz saatte susar, saatli hatırlatma susmaz.
+        guard await NotificationGate.allows(task.notificationCategory, userScheduled: task.kind == .reminder) else { return }
         let center = UNUserNotificationCenter.current()
         // Izin ilk iste sorulur; reddedildiyse sessizce gecilir (not yine de
         // uygulamadaki eylemle yapilmis olur: pano, baglanti).
@@ -145,6 +156,19 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
+        // Bilgisayardan onay isteği: Onayla / Reddet düğmesi kararı gönderir (uygulama kapalıyken de).
+        if let confirm = RemoteConfirmCenter.action(from: response) {
+            guard let approve = confirm.approve else {
+                completionHandler()
+                return
+            }
+            let id = confirm.id
+            Task { @MainActor in
+                await RemoteConfirmCenter.decideFromSystem(id: id, approve: approve)
+                completionHandler()
+            }
+            return
+        }
         let info = response.notification.request.content.userInfo
         if let raw = info["url"] as? String, let url = URL(string: raw) {
             DispatchQueue.main.async { UIApplication.shared.open(url) }
