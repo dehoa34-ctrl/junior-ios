@@ -128,6 +128,9 @@ final class HandsFreeSession: ObservableObject {
     }
 
     private var watchdog: Task<Void, Never>?
+    /// "Konuşuyor" adımında seslendirme aslında bitmişse (kaybolan bitiş geri çağrısı, konuşturulmayan
+    /// tur) döngüyü 60 sn'lik bekçiyi beklemeden ilerletir.
+    private var speechMonitor: Task<Void, Never>?
 
     private let wakeWord: WakeWordService
     private let speech: SpeechService
@@ -332,6 +335,22 @@ final class HandsFreeSession: ObservableObject {
                 try? await Task.sleep(nanoseconds: UInt64(limit * 1_000_000_000))
                 guard !Task.isCancelled else { return }
                 await self?.recoverFromStall()
+            }
+        }
+        speechMonitor?.cancel()
+        speechMonitor = nil
+        if phase == .speaking {
+            speechMonitor = Task { [weak self] in
+                // Seslendirme, adım değiştiği anda eşzamanlı başlar; yine de küçük bir pay bırak.
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                while !Task.isCancelled {
+                    guard let self, self.phase == .speaking else { return }
+                    if self.speech.state != .speaking {
+                        self.resumeWaiting()
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                }
             }
         }
     }

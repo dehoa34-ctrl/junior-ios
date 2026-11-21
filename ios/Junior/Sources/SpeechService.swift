@@ -64,6 +64,8 @@ final class SpeechService: NSObject, ObservableObject {
     private var remoteSpeakTask: Task<Void, Never>?
     /// Calan dogal ses parcasinin bitmesini bekleyen dongu.
     private var playbackContinuation: CheckedContinuation<Bool, Never>?
+    /// Her parçaya bir numara: bekçi, bitmiş eski bir parçanın bekleyişini yanlışlıkla kapatmasın.
+    private var playbackSerial = 0
 
     override init() {
         super.init()
@@ -312,10 +314,22 @@ final class SpeechService: NSObject, ObservableObject {
         self.player = player
         return await withCheckedContinuation { continuation in
             playbackContinuation = continuation
+            playbackSerial += 1
+            let serial = playbackSerial
             if !player.play() {
                 playbackContinuation = nil
                 self.player = nil
                 continuation.resume(returning: false)
+                return
+            }
+            // iOS bazen (ses kesintisi, rota değişimi, mikrofon motorunun yeniden kurulması) çalan
+            // parçayı durdurup bitiş geri çağrısını hiç göndermiyor: bekleyiş sonsuza dek açık kalır,
+            // eller serbest döngü "Yanıtlıyor…"da takılırdı. Süre + pay dolunca parça bitmiş sayılır.
+            let limit = max(1.0, player.duration) + 2.0
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(limit * 1_000_000_000))
+                guard let self, self.playbackSerial == serial, self.playbackContinuation != nil else { return }
+                self.resumePlayback(true)
             }
         }
     }
